@@ -5,10 +5,13 @@ import {
   Route,
   Routes,
 } from "react-router-dom";
+import { AuthProvider } from "./AuthContext";
 import { ShellProvider } from "./ShellContext";
 import { AppShell, ApprovalAliasRedirect } from "../components/AppShell";
+import { ProtectedRoute } from "../components/ProtectedRoute";
 import { AuditPage } from "../pages/AuditPage";
 import { IntakePage } from "../pages/IntakePage";
+import { LoginPage } from "../pages/LoginPage";
 import { NotFoundPage } from "../pages/NotFoundPage";
 import { PipelinesPage } from "../pages/PipelinesPage";
 import { TracePage } from "../pages/TracePage";
@@ -30,9 +33,18 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <ShellProvider>
+        <AuthProvider>
           <Routes>
-            <Route element={<AppShell />}>
+            <Route path="/login" element={<LoginPage />} />
+            <Route
+              element={
+                <ProtectedRoute>
+                  <ShellProvider>
+                    <AppShell />
+                  </ShellProvider>
+                </ProtectedRoute>
+              }
+            >
               <Route index element={<Navigate replace to="/pipelines" />} />
               <Route path="/pipelines" element={<PipelinesPage />} />
               <Route path="/vendors" element={<VendorsPage />} />
@@ -51,7 +63,7 @@ export default function App() {
               <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>
-        </ShellProvider>
+        </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>
   );

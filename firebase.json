@@ -1,0 +1,11 @@
+{
+  "auth": {
+    "providers": {
+      "emailPassword": true,
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "Hackstrom VRM",
+        "supportEmail": "itskarthitd@gmail.com"
+      }
+    }
+  }
+}

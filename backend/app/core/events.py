@@ -32,9 +32,14 @@ class EventManager:
             logger.warning("SSE listener could not start: %s", exc)
 
     async def _listen(self, pubsub):
+        loop = asyncio.get_event_loop()
         try:
-            for message in pubsub.listen():
-                if message["type"] == "message":
+            while True:
+                # Run the blocking get_message in a thread so the event loop is not blocked
+                message = await loop.run_in_executor(
+                    None, lambda: pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                )
+                if message and message["type"] == "message":
                     data = json.loads(message["data"])
                     vendor_id = data.get("vendor_id", "")
                     queues = self._subscribers.get(vendor_id, [])
