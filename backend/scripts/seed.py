@@ -20,13 +20,13 @@ from app.core.auth import hash_password
 
 
 def seed_admin_user():
-    existing = get_user_by_email("admin@opus.local")
+    existing = get_user_by_email("admin@vendorsols.com")
     if existing:
-        print("  [skip] admin@opus.local already exists")
+        print("  [skip] admin@vendorsols.com already exists")
         return
     user = create_user(
         {
-            "email": "admin@opus.local",
+            "email": "admin@vendorsols.com",
             "password_hash": hash_password("changeme123"),
             "full_name": "System Admin",
             "role": "admin",
@@ -36,8 +36,8 @@ def seed_admin_user():
     print(f"  [created] admin user: {user.get('id')}")
 
     for email, name, role in [
-        ("approver@opus.local", "VP Security", "approver"),
-        ("reviewer@opus.local", "Risk Analyst", "reviewer"),
+        ("approver@vendorsols.com", "VP Security", "approver"),
+        ("reviewer@vendorsols.com", "Risk Analyst", "reviewer"),
     ]:
         if not get_user_by_email(email):
             create_user(
@@ -64,7 +64,7 @@ def seed_approval_workflows():
         (
             "Manager Approval",
             "manager",
-            [{"role": "manager", "email": "approver@opus.local", "order": 1}],
+            [{"role": "manager", "email": "approver@vendorsols.com", "order": 1}],
             "sequential",
             48,
         ),
@@ -72,8 +72,8 @@ def seed_approval_workflows():
             "VP Approval",
             "vp",
             [
-                {"role": "vp_security", "email": "approver@opus.local", "order": 1},
-                {"role": "vp_procurement", "email": "approver@opus.local", "order": 1},
+                {"role": "vp_security", "email": "approver@vendorsols.com", "order": 1},
+                {"role": "vp_procurement", "email": "approver@vendorsols.com", "order": 1},
             ],
             "parallel",
             72,
@@ -82,8 +82,8 @@ def seed_approval_workflows():
             "Executive Approval",
             "executive",
             [
-                {"role": "vp_security", "email": "approver@opus.local", "order": 1},
-                {"role": "ciso", "email": "approver@opus.local", "order": 2},
+                {"role": "vp_security", "email": "approver@vendorsols.com", "order": 1},
+                {"role": "ciso", "email": "approver@vendorsols.com", "order": 2},
             ],
             "sequential",
             120,
@@ -92,9 +92,9 @@ def seed_approval_workflows():
             "Board Approval",
             "board",
             [
-                {"role": "vp_security", "email": "approver@opus.local", "order": 1},
-                {"role": "ciso", "email": "approver@opus.local", "order": 2},
-                {"role": "cto", "email": "approver@opus.local", "order": 3},
+                {"role": "vp_security", "email": "approver@vendorsols.com", "order": 1},
+                {"role": "ciso", "email": "approver@vendorsols.com", "order": 2},
+                {"role": "cto", "email": "approver@vendorsols.com", "order": 3},
             ],
             "sequential",
             168,
@@ -179,7 +179,7 @@ def seed_policies():
                     "title": p["title"],
                     "category": p["category"],
                     "content": p["content"],
-                    "source": "OPUS Internal",
+                    "source": "Vendorsols Internal",
                     "version": "1.0",
                     "is_active": True,
                 }
@@ -190,7 +190,7 @@ def seed_policies():
 
 
 def main():
-    print("OPUS Phase 3 — Seeding initial data...")
+    print("Vendorsols Phase 3 — Seeding initial data...")
     seed_admin_user()
     seed_approval_workflows()
     seed_breach_data()

@@ -229,13 +229,13 @@ def send_approval_notification_data(
     risk_score: float = 0.0,
     approval_tier: str = "",
 ) -> dict[str, Any]:
-    subject = f"[OPUS] Approval required: {vendor_name or vendor_id}"
+    subject = f"[Vendorsols] Approval required: {vendor_name or vendor_id}"
     body = (
         f"Vendor: {vendor_name or vendor_id}\n"
         f"Risk score: {risk_score}/100\n"
         f"Approval tier: {approval_tier}\n"
         f"Approver role: {recipient_role}\n\n"
-        "Please review the vendor in OPUS and record your decision before the approval deadline."
+        "Please review the vendor in Vendorsols and record your decision before the approval deadline."
     )
 
     notification = create_notification(
@@ -555,7 +555,7 @@ def send_vendor_notification_data(vendor_id: str, decision: str, conditions: lis
     recipient_name = vendor.get("contact_name", "Vendor Partner")
     normalized_conditions = [str(item) for item in (conditions or [])]
 
-    subject = f"[OPUS] Vendor assessment result: {decision.replace('_', ' ').title()}"
+    subject = f"[Vendorsols] Vendor assessment result: {decision.replace('_', ' ').title()}"
     body_lines = [
         f"Hello {recipient_name},",
         "",
@@ -567,7 +567,7 @@ def send_vendor_notification_data(vendor_id: str, decision: str, conditions: lis
     body_lines.extend(
         [
             "",
-            "If you have questions, please contact the OPUS vendor management team.",
+            "If you have questions, please contact the Vendorsols vendor management team.",
         ]
     )
     body = "\n".join(body_lines)

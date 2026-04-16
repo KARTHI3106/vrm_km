@@ -207,7 +207,7 @@ Guidelines:
 - Clear deadline
 - Upload instructions (reply to this email or upload to secure portal)
 - Offer to help if questions
-- Professional signature from "OPUS Vendor Risk Assessment Team"
+- Professional signature from "Vendorsols Vendor Risk Assessment Team"
 
 Write the complete email."""
 
@@ -456,7 +456,7 @@ Guidelines:
 - List outstanding items
 - Emphasize urgency
 - Offer support
-- Professional signature from "OPUS Vendor Risk Assessment Team"
+- Professional signature from "Vendorsols Vendor Risk Assessment Team"
 """
         response = llm.invoke(prompt)
         email_body = response.content if hasattr(response, "content") else str(response)

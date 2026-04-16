@@ -1,8 +1,8 @@
-# OPUS Scoring Methodology
+# Vendorsols Scoring Methodology
 
 ## Overview
 
-OPUS uses **deterministic scoring** for all three review domains.  Scores are
+Vendorsols uses **deterministic scoring** for all three review domains.  Scores are
 computed by pure Python functions — the LLM is never asked to generate,
 interpret, or report numeric scores.  This is the **Hybrid Pattern**.
 

@@ -41,7 +41,7 @@ from app.tools.financial_tools import FINANCIAL_TOOLS, calculate_financial_risk_
 
 logger = logging.getLogger(__name__)
 
-FINANCIAL_SYSTEM_PROMPT = """You are the Financial Review Agent for the OPUS Vendor Risk Assessment System.
+FINANCIAL_SYSTEM_PROMPT = """You are the Financial Review Agent for the Vendorsols Vendor Risk Assessment System.
 Your role is to assess a vendor's financial stability and risk profile.
 
 ## Your Capabilities

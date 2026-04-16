@@ -1,5 +1,5 @@
 -- ============================================
--- OPUS Phase 1: Database Schema Migration
+-- Vendorsols Phase 1: Database Schema Migration
 -- Vendor Risk Assessment System
 -- ============================================
 

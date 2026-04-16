@@ -1,8 +1,8 @@
-# OPUS Agent Flow
+# Vendorsols Agent Flow
 
 ## Overview
 
-OPUS uses a multi-agent LangGraph state machine to orchestrate vendor risk
+Vendorsols uses a multi-agent LangGraph state machine to orchestrate vendor risk
 assessments.  Each node in the graph is a specialised agent backed by
 LangChain ReAct pattern and Groq-powered LLMs.
 
@@ -86,7 +86,7 @@ This eliminates score hallucination: the LLM never generates or interprets numer
 
 ## Rate Limiting
 
-Groq free tier allows 30 RPM.  OPUS uses a `TokenBucketRateLimiter`
+Groq free tier allows 30 RPM.  Vendorsols uses a `TokenBucketRateLimiter`
 (default: 25 RPM with 5 headroom) to prevent API exhaustion across
 all concurrent agents.  The `call_llm_with_backoff` wrapper adds
 exponential retry on 429/5xx errors.

@@ -418,7 +418,7 @@ class TestAuthAPI:
         "app.api.phase3_routes.get_user_by_email",
         return_value={
             "id": "u1",
-            "email": "admin@opus.local",
+            "email": "admin@vendorsols.com",
             "password_hash": "$2b$12$fakehash",
             "full_name": "Admin",
             "role": "admin",
@@ -430,7 +430,7 @@ class TestAuthAPI:
         resp = client.post(
             "/api/v1/auth/login",
             json={
-                "email": "admin@opus.local",
+                "email": "admin@vendorsols.com",
                 "password": "wrong",
             },
         )

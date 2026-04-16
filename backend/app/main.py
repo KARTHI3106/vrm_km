@@ -1,5 +1,5 @@
 """
-OPUS — Vendor Risk Management System
+Vendorsols — Vendor Risk Management System
 FastAPI Application Entrypoint
 """
 
@@ -81,12 +81,12 @@ async def lifespan(app: FastAPI):
 
     await event_manager.start()
 
-    logger.info(f"OPUS Vendor Risk Management System started (env={settings.app_env})")
+    logger.info(f"Vendorsols Vendor Risk Management System started (env={settings.app_env})")
 
     yield
 
     await event_manager.stop()
-    logger.info("OPUS shutting down")
+    logger.info("Vendorsols shutting down")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -94,7 +94,7 @@ async def lifespan(app: FastAPI):
 # ═══════════════════════════════════════════════════════════════════
 
 app = FastAPI(
-    title="OPUS — Vendor Risk Management System",
+    title="Vendorsols — Vendor Risk Management System",
     description=(
         "Multi-agent autonomous vendor risk assessment platform. "
         "Phase 3: All 8 agents — Intake, Security, Compliance, Financial, "
@@ -133,7 +133,7 @@ app.include_router(phase3_router)
 async def root():
     """Root endpoint — system information."""
     return {
-        "system": "OPUS — Vendor Risk Management System",
+        "system": "Vendorsols — Vendor Risk Management System",
         "version": "3.0.0",
         "phase": "Phase 3: Production Ready",
         "agents": [

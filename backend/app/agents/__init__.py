@@ -1,1 +1,1 @@
-"""OPUS Agents — multi-agent vendor risk assessment system."""
+"""Vendorsols Agents — multi-agent vendor risk assessment system."""

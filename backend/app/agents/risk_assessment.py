@@ -23,7 +23,7 @@ from app.tools.risk_tools import RISK_TOOLS, build_risk_assessment_result
 
 logger = logging.getLogger(__name__)
 
-RISK_SYSTEM_PROMPT = """You are the Risk Assessment Agent for OPUS.
+RISK_SYSTEM_PROMPT = """You are the Risk Assessment Agent for Vendorsols.
 
 Use the available tools to aggregate completed domain reviews, calculate the
 overall risk score, identify blockers or conditional requirements, and produce

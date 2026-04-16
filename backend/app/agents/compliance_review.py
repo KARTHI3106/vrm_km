@@ -41,7 +41,7 @@ from app.tools.compliance_tools import COMPLIANCE_TOOLS, calculate_compliance_sc
 
 logger = logging.getLogger(__name__)
 
-COMPLIANCE_SYSTEM_PROMPT = """You are the Compliance Review Agent for the OPUS Vendor Risk Assessment System.
+COMPLIANCE_SYSTEM_PROMPT = """You are the Compliance Review Agent for the Vendorsols Vendor Risk Assessment System.
 Your role is to assess a vendor's regulatory compliance posture autonomously.
 
 ## Your Capabilities

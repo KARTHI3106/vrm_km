@@ -28,7 +28,7 @@ from app.tools.approval_tools import (
 
 logger = logging.getLogger(__name__)
 
-APPROVAL_SYSTEM_PROMPT = """You are the Approval Orchestrator Agent for OPUS.
+APPROVAL_SYSTEM_PROMPT = """You are the Approval Orchestrator Agent for Vendorsols.
 
 Use the approval workflow tools to route the vendor to the correct approvers,
 track the approval state, and finalize the vendor record once the workflow is

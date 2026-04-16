@@ -31,7 +31,7 @@ from app.tools.evidence_tools import EVIDENCE_TOOLS
 
 logger = logging.getLogger(__name__)
 
-EVIDENCE_SYSTEM_PROMPT = """You are the Evidence Coordinator Agent for the OPUS Vendor Risk Assessment System.
+EVIDENCE_SYSTEM_PROMPT = """You are the Evidence Coordinator Agent for the Vendorsols Vendor Risk Assessment System.
 Your role is to identify missing evidence and coordinate its collection.
 
 IMPORTANT: You are running AFTER the Security, Compliance, and Financial review

@@ -108,7 +108,7 @@ async def get_current_user(
     if not settings.jwt_secret:
         return {
             "id": "00000000-0000-0000-0000-000000000000",
-            "email": "admin@opus.local",
+            "email": "admin@vendorsols.com",
             "full_name": "Dev Admin",
             "role": "admin",
             "is_active": True,

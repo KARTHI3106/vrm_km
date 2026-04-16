@@ -36,8 +36,8 @@ class Settings(BaseSettings):
 
     # Mailtrap (Evidence Coordinator)
     mailtrap_api_key: str = Field(default="")
-    mailtrap_sender_email: str = Field(default="opus@vrm-system.com")
-    mailtrap_sender_name: str = Field(default="OPUS Vendor Risk System")
+    mailtrap_sender_email: str = Field(default="hello@vendorsols.com")
+    mailtrap_sender_name: str = Field(default="Vendorsols Vendor Risk System")
     mailgun_api_key: str = Field(default="")
     mailgun_domain: str = Field(default="")
     mailgun_base_url: str = Field(default="https://api.mailgun.net/v3")

@@ -20,7 +20,7 @@ from app.tools.supervisor_tools import SUPERVISOR_TOOLS, compile_approval_packet
 
 logger = logging.getLogger(__name__)
 
-SUPERVISOR_SYSTEM_PROMPT = """You are the OPUS supervisor.
+SUPERVISOR_SYSTEM_PROMPT = """You are the Vendorsols supervisor.
 
 Your job is to assemble the final approval packet from completed agent output,
 highlight the current workflow status, and produce a concise executive summary
