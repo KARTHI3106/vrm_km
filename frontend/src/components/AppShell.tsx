@@ -168,7 +168,7 @@ export function AppShell() {
       <header className="topbar print-hidden">
         <div className="topbar__brand">
           <button className="brand-mark" onClick={() => navigate("/pipelines")} type="button">
-            Hackstrom Tower
+            Vendorsols
           </button>
           <nav className="topbar__nav">
             <NavLink className="topbar__link" to="/trace">
@@ -202,7 +202,7 @@ export function AppShell() {
             <span className="material-symbols-outlined">settings</span>
           </button>
           <div className="avatar-block" aria-label="Operator avatar">
-            HT
+            VS
           </div>
         </div>
       </header>

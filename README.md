@@ -1,4 +1,4 @@
-# OPUS — Vendor Risk Management System (Hackstrom Tower)
+# OPUS — Vendor Risk Management System (Vendorsols)
 
 > Multi-agent autonomous vendor risk assessment platform. Eight specialized AI agents collaborate via a LangGraph state machine to intake, review, score, and approve vendors through a deterministic, auditable workflow.
 
@@ -29,7 +29,7 @@
 
 ## Project Overview
 
-OPUS (codenamed **Hackstrom Tower**) automates the complete lifecycle of vendor risk assessment:
+OPUS (codenamed **Vendorsols**) automates the complete lifecycle of vendor risk assessment:
 
 1. **Intake** — Upload vendor documents (PDF, DOCX, XLSX); agents parse, classify, and extract metadata
 2. **Parallel Review** — Three domain agents (Security, Compliance, Financial) run concurrently with deterministic scoring
@@ -228,7 +228,7 @@ vrm/
 │       │   └── utils.ts             # Currency, date, percent formatters
 │       └── test/
 │           └── setup.ts
-└── stitch_hackstrom_vendor_risk_tower/   # Design artifacts / reference materials
+└── stitch_vendorsols_vendor_risk_tower/   # Design artifacts / reference materials
 ```
 
 ---

@@ -7,7 +7,7 @@ function renderRoute(path: string) {
   return render(<App />);
 }
 
-describe("Hackstrom frontend routes", () => {
+describe("Vendorsols frontend routes", () => {
   it("renders the pipeline page with mapped vendor queue data", async () => {
     renderRoute("/pipelines");
 
@@ -49,7 +49,7 @@ describe("Hackstrom frontend routes", () => {
     expect(screen.getByRole("button", { name: /Approve/i })).toBeDisabled();
 
     first.unmount();
-    window.localStorage.setItem("hackstrom.approval-token", "test-token");
+    window.localStorage.setItem("vendorsols.approval-token", "test-token");
 
     renderRoute("/audit/vendor-1");
 

@@ -11,4 +11,4 @@ export const API_BASE_URL = normalizeApiBaseUrl(
 );
 export const ENV_APPROVAL_TOKEN =
   import.meta.env.VITE_APPROVER_BEARER_TOKEN?.trim() || "";
-export const APPROVAL_TOKEN_STORAGE_KEY = "hackstrom.approval-token";
+export const APPROVAL_TOKEN_STORAGE_KEY = "vendorsols.approval-token";

@@ -100,11 +100,9 @@ export function LoginPage() {
         {/* Left: brand panel */}
         <div className="login-brand">
           <div className="login-brand__inner">
-            <span className="login-brand__kicker">DeepFrog AI Solutions</span>
+            <span className="login-brand__kicker">Vendorsols</span>
             <h1 className="login-brand__title">
-              Hackstrom
-              <br />
-              <span className="login-brand__accent">Tower</span>
+              Vendorsols
             </h1>
             <p className="login-brand__tagline">
               Vendor Risk Management Platform
@@ -151,7 +149,7 @@ export function LoginPage() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="agent@deepfrog.ai"
+                  placeholder="agent@vendorsols.com"
                   required
                   autoComplete="email"
                 />
