@@ -35,7 +35,7 @@
 
 ## Project Overview
 
-OPUS (codenamed **Vendorsols**) automates the complete lifecycle of vendor risk assessment:
+**Vendorsols** automates the complete lifecycle of vendor risk assessment:
 
 1. **Intake** — Upload vendor documents (PDF, DOCX, XLSX); agents parse, classify, and extract metadata
 2. **Parallel Review** — Three domain agents (Security, Compliance, Financial) run concurrently with deterministic scoring
@@ -701,22 +701,6 @@ This starts:
 - **Qdrant** on ports 6333/6334
 - **Prometheus** on port 9090
 - **Grafana** on port 3000 (admin/admin)
-
-### Backend Container
-
-```bash
-cd backend
-docker build -t opus-vrm .
-docker run -p 8000:8000 --env-file .env opus-vrm
-```
-
-### Dockerfile
-```dockerfile
-FROM python:3.12-slim
-# Installs: build-essential, curl, poppler-utils, tesseract-ocr
-# Exposes port 8000
-# CMD: uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
 
 ---
 
