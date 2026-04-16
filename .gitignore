@@ -45,4 +45,5 @@ desktop.ini
 .kilo/
 .kilo/skills
 .kilo/kilo.json
-
+.firebaserc
+firebase.json
