@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 # Vendorsols — Vendor Risk Management System (Vendorsols)
+=======
+# Vendor Risk Management System - Vendorsols
+>>>>>>> a0d205a36171b73c9f04e10086117934d2cfd1d4
 
 > Multi-agent autonomous vendor risk assessment platform. Eight specialized AI agents collaborate via a LangGraph state machine to intake, review, score, and approve vendors through a deterministic, auditable workflow.
 
@@ -26,10 +30,20 @@
 - [Contribution Guidelines](#contribution-guidelines)
 
 ---
+## Snapshots
+<img width="1897" height="882" alt="hs1" src="https://github.com/user-attachments/assets/a39477fd-350d-4b78-b7fc-4e76c90d5857" />
+<img width="1897" height="861" alt="hs2" src="https://github.com/user-attachments/assets/c036bfe9-41a3-4d28-a996-021c64e4938e" />
+<img width="1901" height="859" alt="hs3" src="https://github.com/user-attachments/assets/d1bfeb45-47c3-4518-91ac-db72af574fff" />
+
+---
 
 ## Project Overview
 
+<<<<<<< HEAD
 Vendorsols (codenamed **Vendorsols**) automates the complete lifecycle of vendor risk assessment:
+=======
+**Vendorsols** automates the complete lifecycle of vendor risk assessment:
+>>>>>>> a0d205a36171b73c9f04e10086117934d2cfd1d4
 
 1. **Intake** — Upload vendor documents (PDF, DOCX, XLSX); agents parse, classify, and extract metadata
 2. **Parallel Review** — Three domain agents (Security, Compliance, Financial) run concurrently with deterministic scoring
@@ -696,6 +710,7 @@ This starts:
 - **Prometheus** on port 9090
 - **Grafana** on port 3000 (admin/admin)
 
+<<<<<<< HEAD
 ### Backend Container
 
 ```bash
@@ -712,6 +727,8 @@ FROM python:3.12-slim
 # CMD: uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
+=======
+>>>>>>> a0d205a36171b73c9f04e10086117934d2cfd1d4
 ---
 
 ## Testing
