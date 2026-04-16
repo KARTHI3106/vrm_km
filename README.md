@@ -1,4 +1,4 @@
-# OPUS — Vendor Risk Management System (Vendorsols)
+# Vendor Risk Management System (Vendorsols)
 
 > Multi-agent autonomous vendor risk assessment platform. Eight specialized AI agents collaborate via a LangGraph state machine to intake, review, score, and approve vendors through a deterministic, auditable workflow.
 
