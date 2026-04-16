@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-# Vendorsols — Vendor Risk Management System (Vendorsols)
-=======
 # Vendor Risk Management System - Vendorsols
->>>>>>> a0d205a36171b73c9f04e10086117934d2cfd1d4
 
 > Multi-agent autonomous vendor risk assessment platform. Eight specialized AI agents collaborate via a LangGraph state machine to intake, review, score, and approve vendors through a deterministic, auditable workflow.
 
@@ -39,11 +35,7 @@
 
 ## Project Overview
 
-<<<<<<< HEAD
-Vendorsols (codenamed **Vendorsols**) automates the complete lifecycle of vendor risk assessment:
-=======
 **Vendorsols** automates the complete lifecycle of vendor risk assessment:
->>>>>>> a0d205a36171b73c9f04e10086117934d2cfd1d4
 
 1. **Intake** — Upload vendor documents (PDF, DOCX, XLSX); agents parse, classify, and extract metadata
 2. **Parallel Review** — Three domain agents (Security, Compliance, Financial) run concurrently with deterministic scoring
@@ -625,7 +617,7 @@ MAX_WORKFLOW_RETRIES=2
 LLM_REQUESTS_PER_MINUTE=25
 AGENT_TIMEOUT_SECONDS=120
 MAILTRAP_API_KEY=
-MAILTRAP_SENDER_EMAIL=Vendorsols@vrm-system.com
+MAILTRAP_SENDER_EMAIL=opus@vrm-system.com
 CREDIT_API_MODE=mock
 OPENCORPORATES_API_KEY=
 ```
@@ -710,25 +702,6 @@ This starts:
 - **Prometheus** on port 9090
 - **Grafana** on port 3000 (admin/admin)
 
-<<<<<<< HEAD
-### Backend Container
-
-```bash
-cd backend
-docker build -t Vendorsols-vrm .
-docker run -p 8000:8000 --env-file .env Vendorsols-vrm
-```
-
-### Dockerfile
-```dockerfile
-FROM python:3.12-slim
-# Installs: build-essential, curl, poppler-utils, tesseract-ocr
-# Exposes port 8000
-# CMD: uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-=======
->>>>>>> a0d205a36171b73c9f04e10086117934d2cfd1d4
 ---
 
 ## Testing
