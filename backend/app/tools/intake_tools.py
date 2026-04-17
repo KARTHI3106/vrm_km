@@ -85,11 +85,20 @@ def validate_file(file_path: str, expected_type: Optional[str] = None) -> Option
                         "error": "File is not a valid PDF",
                         "file_path": file_path
                     }
-                elif expected_type in ("docx", "xlsx") and not header.startswith(b'PK\x03\x04'):
+                elif expected_type == "docx" and not header.startswith(b'PK\x03\x04'):
                     return {
                         "status": "error",
                         "error_code": "INVALID_FILE_TYPE",
                         "error": f"File is not a valid {expected_type.upper()}",
+                        "file_path": file_path
+                    }
+                elif expected_type == "xlsx" and not (
+                    header.startswith(b'PK\x03\x04') or header.startswith(b'\xD0\xCF\x11\xE0')
+                ):
+                    return {
+                        "status": "error",
+                        "error_code": "INVALID_FILE_TYPE",
+                        "error": "File is not a valid XLSX/XLS file",
                         "file_path": file_path
                     }
     except PermissionError as e:

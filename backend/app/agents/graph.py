@@ -27,7 +27,17 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langchain_core.messages import HumanMessage, AIMessage
 
-from app.core.db import update_vendor, create_audit_log
+from app.core.business_workflow import (
+    build_vendor_metadata_update,
+    derive_business_risk_tier,
+)
+from app.core.db import (
+    update_vendor,
+    create_audit_log,
+    get_documents_for_vendor,
+    get_vendor,
+)
+from app.core.agent_trace import trace_agent_decision, trace_workflow_phase
 from app.core.redis_state import save_state, load_state
 from app.core.events import publish_event
 from app.agents.document_intake import run_intake_agent
@@ -62,6 +72,7 @@ class GraphState(TypedDict):
     security_result: dict
     compliance_result: dict
     financial_result: dict
+    risk_tiering_result: dict
     evidence_result: dict
     risk_assessment_result: dict
     approval_result: dict
@@ -112,6 +123,7 @@ def intake_node(state: GraphState) -> GraphState:
         },
         state
     )
+    trace_workflow_phase(vendor_id, "intake", "Document intake started.", 10)
 
     create_audit_log(
         vendor_id=vendor_id,
@@ -164,6 +176,90 @@ def intake_node(state: GraphState) -> GraphState:
     }
 
 
+def risk_tiering_node(state: GraphState) -> GraphState:
+    """Compute the business-facing Tier 1-3 classification after document intake."""
+    vendor_id = state["vendor_id"]
+
+    logger.info(f"[risk_tiering_node] Determining initial risk tier for vendor {vendor_id}")
+
+    _update_state(
+        vendor_id,
+        {
+            "current_phase": "risk_tiering",
+            "current_agent": "risk_tiering",
+            "progress_percentage": 20,
+        },
+        state,
+    )
+    trace_workflow_phase(vendor_id, "risk_tiering", "Initial risk tiering started.", 20)
+
+    try:
+        vendor = get_vendor(vendor_id) or {}
+    except Exception:
+        vendor = {}
+    vendor = {
+        "vendor_type": state.get("vendor_type", ""),
+        "contract_value": state.get("contract_value", 0.0),
+        "metadata": {},
+        **vendor,
+    }
+    try:
+        documents = get_documents_for_vendor(vendor_id)
+    except Exception:
+        documents = []
+    tier = derive_business_risk_tier(
+        vendor_type=vendor.get("vendor_type", ""),
+        contract_value=float(vendor.get("contract_value", 0) or 0),
+        overall_score=None,
+    )
+    metadata = build_vendor_metadata_update(
+        vendor,
+        {
+            "business_workflow": {
+                "initial_risk_tier": {
+                    **tier,
+                    "document_count": len(documents),
+                    "computed_at": datetime.now(timezone.utc).isoformat(),
+                }
+            }
+        },
+    )
+    try:
+        update_vendor(vendor_id, {"metadata": metadata})
+    except Exception:
+        logger.warning("Failed to persist initial risk tier metadata for vendor %s", vendor_id)
+
+    create_audit_log(
+        vendor_id=vendor_id,
+        agent_name="risk_tiering",
+        action="initial_tier_assigned",
+        output_data={
+            "risk_tier": tier.get("label"),
+            "document_count": len(documents),
+            "rationale": tier.get("rationale"),
+        },
+    )
+    trace_agent_decision(
+        vendor_id,
+        "risk_tiering",
+        "Initial business risk tier determined from vendor profile and contract value.",
+        {
+            "risk_tier": tier.get("label"),
+            "rationale": tier.get("rationale"),
+            "document_count": len(documents),
+        },
+    )
+
+    return {
+        "risk_tiering_result": {"status": "success", **tier},
+        "messages": [
+            AIMessage(
+                content=f"[Risk Tiering] {tier.get('label', 'Tier Pending')}: {tier.get('rationale', '')}"
+            )
+        ],
+    }
+
+
 def security_node(state: GraphState) -> GraphState:
     """Security Review Agent node — assesses vendor security posture.
 
@@ -184,6 +280,7 @@ def security_node(state: GraphState) -> GraphState:
         },
         state
     )
+    trace_workflow_phase(vendor_id, "security_review", "Security review started.", 25)
 
     create_audit_log(
         vendor_id=vendor_id, agent_name="security_review", action="agent_started"
@@ -228,6 +325,7 @@ def compliance_node(state: GraphState) -> GraphState:
         },
         state
     )
+    trace_workflow_phase(vendor_id, "compliance_review", "Compliance review started.", 30)
 
     create_audit_log(
         vendor_id=vendor_id, agent_name="compliance_review", action="agent_started"
@@ -274,6 +372,7 @@ def financial_node(state: GraphState) -> GraphState:
         },
         state
     )
+    trace_workflow_phase(vendor_id, "financial_review", "Financial review started.", 35)
 
     create_audit_log(
         vendor_id=vendor_id, agent_name="financial_review", action="agent_started"
@@ -327,6 +426,7 @@ def supervisor_aggregate_node(state: GraphState) -> GraphState:
         },
         state
     )
+    trace_workflow_phase(vendor_id, "aggregating", "Aggregating parallel review results.", 45)
 
     create_audit_log(
         vendor_id=vendor_id, agent_name="supervisor", action="aggregate_results"
@@ -373,6 +473,12 @@ def supervisor_aggregate_node(state: GraphState) -> GraphState:
     )
 
     publish_event(vendor_id, "reviews_aggregated", {"progress_percentage": 45})
+    trace_agent_decision(
+        vendor_id,
+        "supervisor",
+        "Parallel review results aggregated into shared context.",
+        shared_review_context,
+    )
 
     return {
         "current_phase": "aggregated",
@@ -403,6 +509,7 @@ def evidence_node(state: GraphState) -> GraphState:
         },
         state
     )
+    trace_workflow_phase(vendor_id, "evidence_coordination", "Evidence coordination started.", 55)
 
     create_audit_log(
         vendor_id=vendor_id, agent_name="evidence_coordinator", action="agent_started"
@@ -447,6 +554,7 @@ def risk_assessment_node(state: GraphState) -> GraphState:
         },
         state
     )
+    trace_workflow_phase(vendor_id, "risk_assessment", "Risk assessment started.", 70)
 
     create_audit_log(
         vendor_id=vendor_id, agent_name="risk_assessment", action="agent_started"
@@ -508,6 +616,7 @@ def approval_orchestrator_node(state: GraphState) -> GraphState:
         },
         state
     )
+    trace_workflow_phase(vendor_id, "approval", "Approval orchestration started.", 85)
 
     create_audit_log(
         vendor_id=vendor_id, agent_name="approval_orchestrator", action="agent_started"
@@ -552,16 +661,110 @@ def approval_orchestrator_node(state: GraphState) -> GraphState:
     }
 
 
+def erp_setup_node(state: GraphState) -> GraphState:
+    """Record ERP setup as a post-approval operational step."""
+    vendor_id = state["vendor_id"]
+
+    logger.info(f"[erp_setup_node] Completing ERP setup for vendor {vendor_id}")
+
+    _update_state(
+        vendor_id,
+        {
+            "current_phase": "erp_setup",
+            "current_agent": "operations",
+            "progress_percentage": 94,
+        },
+        state,
+    )
+    trace_workflow_phase(vendor_id, "erp_setup", "ERP setup completed.", 94)
+    create_audit_log(
+        vendor_id=vendor_id,
+        agent_name="operations",
+        action="erp_setup_completed",
+        output_data={"status": "completed"},
+    )
+    return {
+        "messages": [AIMessage(content="[Operations] ERP setup completed.")],
+    }
+
+
+def activation_node(state: GraphState) -> GraphState:
+    """Record vendor activation as a post-approval operational step."""
+    vendor_id = state["vendor_id"]
+
+    logger.info(f"[activation_node] Activating vendor {vendor_id}")
+
+    _update_state(
+        vendor_id,
+        {
+            "current_phase": "activation",
+            "current_agent": "operations",
+            "progress_percentage": 97,
+        },
+        state,
+    )
+    trace_workflow_phase(vendor_id, "activation", "Vendor activation completed.", 97)
+    create_audit_log(
+        vendor_id=vendor_id,
+        agent_name="operations",
+        action="activation_completed",
+        output_data={"status": "completed"},
+    )
+    return {
+        "messages": [AIMessage(content="[Operations] Vendor activation completed.")],
+    }
+
+
+def annual_soc2_renewal_node(state: GraphState) -> GraphState:
+    """Record annual SOC2 renewal scheduling after activation."""
+    vendor_id = state["vendor_id"]
+
+    logger.info(f"[annual_soc2_renewal_node] Scheduling SOC2 renewal for vendor {vendor_id}")
+
+    _update_state(
+        vendor_id,
+        {
+            "current_phase": "annual_soc2_renewal",
+            "current_agent": "operations",
+            "progress_percentage": 99,
+        },
+        state,
+    )
+    trace_workflow_phase(vendor_id, "annual_soc2_renewal", "Annual SOC2 renewal scheduled.", 99)
+    create_audit_log(
+        vendor_id=vendor_id,
+        agent_name="operations",
+        action="annual_soc2_renewal_scheduled",
+        output_data={"status": "scheduled"},
+    )
+    return {
+        "messages": [AIMessage(content="[Operations] Annual SOC2 renewal scheduled.")],
+    }
+
+
 def supervisor_final_node(state: GraphState) -> GraphState:
     """Supervisor final node — compiles all results and closes the workflow."""
     vendor_id = state["vendor_id"]
 
     logger.info(f"[supervisor_final] Compiling final results for vendor {vendor_id}")
 
+    # Check for upstream errors first
+    upstream_error = False
+    if state.get("errors"):
+        upstream_error = True
+    elif state.get("intake_result", {}).get("status") == "error":
+        upstream_error = True
+    elif state.get("security_result", {}).get("status") == "error":
+        upstream_error = True
+    elif state.get("compliance_result", {}).get("status") == "error":
+        upstream_error = True
+    elif state.get("financial_result", {}).get("status") == "error":
+        upstream_error = True
+
     _update_state(
         vendor_id,
         {
-            "current_phase": "compiling",
+            "current_phase": "error" if upstream_error else "compiling",
             "current_agent": "supervisor",
             "progress_percentage": 95,
         },
@@ -571,41 +774,79 @@ def supervisor_final_node(state: GraphState) -> GraphState:
     create_audit_log(
         vendor_id=vendor_id, agent_name="supervisor", action="compile_final"
     )
+    trace_workflow_phase(
+        vendor_id,
+        "supervisor_final",
+        "Compiling final supervisor packet and validating downstream artifacts.",
+        95,
+    )
 
-    result = run_supervisor(vendor_id)
+    result = run_supervisor(vendor_id, has_error=upstream_error)
+
+    downstream_artifacts_ready = bool(state.get("risk_assessment_result")) and bool(result.get("final_packet"))
+    has_error = upstream_error or result.get("status") == "error" or not downstream_artifacts_ready
+    final_phase = "error" if has_error else "done"
+    approval_status = (state.get("approval_result") or {}).get("current_status")
+    final_vendor_status = "error"
+    if not has_error:
+        if approval_status == "approved":
+            final_vendor_status = "approved"
+        elif approval_status == "rejected":
+            final_vendor_status = "rejected"
+        elif approval_status == "conditional":
+            final_vendor_status = "conditional_approval"
+        elif approval_status == "pending":
+            final_vendor_status = "pending_approval"
+        else:
+            final_vendor_status = "review_completed"
+
+    _update_state(
+        vendor_id,
+        {
+            "current_phase": final_phase,
+            "progress_percentage": 100 if not has_error else 90,
+        },
+        state
+    )
+
+    if has_error:
+        update_vendor(vendor_id, {"status": "error"})
+    else:
+        update_vendor(vendor_id, {"status": final_vendor_status})
 
     create_audit_log(
         vendor_id=vendor_id,
         agent_name="supervisor",
         action="agent_completed",
-        output_data={"status": result.get("status")},
-    )
-
-    _update_state(
-        vendor_id,
-        {
-            "current_phase": "done",
-            "progress_percentage": 100,
-        },
-        state
+        output_data={"status": "error" if has_error else result.get("status")},
     )
 
     publish_event(
         vendor_id,
         "workflow_complete",
         {
-            "status": result.get("status"),
+            "status": "error" if has_error else result.get("status"),
             "approval_status": result.get("approval_status"),
+        },
+    )
+    trace_agent_decision(
+        vendor_id,
+        "supervisor",
+        "Final workflow status resolved.",
+        {
+            "has_error": has_error,
+            "downstream_artifacts_ready": downstream_artifacts_ready,
+            "vendor_status": final_vendor_status if not has_error else "error",
         },
     )
 
     return {
         "supervisor_result": result,
-        "current_phase": "done",
+        "current_phase": final_phase,
         "final_report": result,
         "messages": [
             AIMessage(
-                content=f"[Supervisor] Review complete. Status: {result.get('status', 'unknown')}"
+                content=f"[Supervisor] Review complete. Status: {'error' if has_error else result.get('status', 'unknown')}"
             )
         ],
     }
@@ -617,12 +858,7 @@ def supervisor_final_node(state: GraphState) -> GraphState:
 
 
 def route_after_intake(state: GraphState) -> list[str]:
-    """After intake, fan out to parallel review agents (or retry/supervisor on error).
-
-    FIXED: Previously routed to evidence_node first, which ran before
-    reviews had produced any findings.  Now routes directly to the
-    three parallel review agents.
-    """
+    """After intake, determine initial risk tier before detailed reviews."""
     intake_result = state.get("intake_result", {})
     if intake_result.get("status") == "error":
         retry_count = state.get("retry_count", 0)
@@ -640,7 +876,14 @@ def route_after_intake(state: GraphState) -> list[str]:
     # ──────────────────────────────────────────────────────────────
     # FIX: Fan out directly to parallel review agents (NOT evidence)
     # ──────────────────────────────────────────────────────────────
-    return ["security_node", "compliance_node", "financial_node"]
+    return ["risk_tiering_node"]
+
+
+def route_after_approval(state: GraphState) -> Literal["erp_setup_node", "supervisor_final_node"]:
+    approval_status = str((state.get("approval_result") or {}).get("current_status", "")).lower()
+    if approval_status in {"approved", "conditional"}:
+        return "erp_setup_node"
+    return "supervisor_final_node"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -666,6 +909,7 @@ def build_workflow_graph() -> StateGraph:
 
     # Add all nodes
     workflow.add_node("intake_node", intake_node)
+    workflow.add_node("risk_tiering_node", risk_tiering_node)
     workflow.add_node("security_node", security_node)
     workflow.add_node("compliance_node", compliance_node)
     workflow.add_node("financial_node", financial_node)
@@ -673,6 +917,9 @@ def build_workflow_graph() -> StateGraph:
     workflow.add_node("evidence_node", evidence_node)
     workflow.add_node("risk_assessment_node", risk_assessment_node)
     workflow.add_node("approval_orchestrator_node", approval_orchestrator_node)
+    workflow.add_node("erp_setup_node", erp_setup_node)
+    workflow.add_node("activation_node", activation_node)
+    workflow.add_node("annual_soc2_renewal_node", annual_soc2_renewal_node)
     workflow.add_node("supervisor_final_node", supervisor_final_node)
 
     # Entry point
@@ -685,9 +932,12 @@ def build_workflow_graph() -> StateGraph:
     workflow.add_conditional_edges(
         "intake_node",
         route_after_intake,
-        ["security_node", "compliance_node", "financial_node",
-         "supervisor_final_node", "intake_node"],
+        ["risk_tiering_node", "supervisor_final_node", "intake_node"],
     )
+
+    workflow.add_edge("risk_tiering_node", "security_node")
+    workflow.add_edge("risk_tiering_node", "compliance_node")
+    workflow.add_edge("risk_tiering_node", "financial_node")
 
     # All three review nodes fan-in to the supervisor aggregate
     workflow.add_edge("security_node", "supervisor_aggregate_node")
@@ -703,7 +953,14 @@ def build_workflow_graph() -> StateGraph:
     # After evidence → risk → approval → final → END
     workflow.add_edge("evidence_node", "risk_assessment_node")
     workflow.add_edge("risk_assessment_node", "approval_orchestrator_node")
-    workflow.add_edge("approval_orchestrator_node", "supervisor_final_node")
+    workflow.add_conditional_edges(
+        "approval_orchestrator_node",
+        route_after_approval,
+        ["erp_setup_node", "supervisor_final_node"],
+    )
+    workflow.add_edge("erp_setup_node", "activation_node")
+    workflow.add_edge("activation_node", "annual_soc2_renewal_node")
+    workflow.add_edge("annual_soc2_renewal_node", "supervisor_final_node")
     workflow.add_edge("supervisor_final_node", END)
 
     return workflow
@@ -749,6 +1006,7 @@ def run_full_workflow(
         "security_result": {},
         "compliance_result": {},
         "financial_result": {},
+        "risk_tiering_result": {},
         "evidence_result": {},
         "risk_assessment_result": {},
         "approval_result": {},
@@ -770,6 +1028,7 @@ def run_full_workflow(
             "security_result": final_state.get("security_result", {}),
             "compliance_result": final_state.get("compliance_result", {}),
             "financial_result": final_state.get("financial_result", {}),
+            "risk_tiering_result": final_state.get("risk_tiering_result", {}),
             "evidence_result": final_state.get("evidence_result", {}),
             "risk_assessment_result": final_state.get("risk_assessment_result", {}),
             "approval_result": final_state.get("approval_result", {}),

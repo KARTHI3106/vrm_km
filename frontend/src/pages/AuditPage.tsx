@@ -20,8 +20,28 @@ import {
 import { toneForRisk } from "../lib/status";
 import { formatDateTime, formatPercent, normalizeText } from "../lib/utils";
 
+function summarizeValue(value: unknown) {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return String(
+      record.title ||
+        record.condition ||
+        record.requirement ||
+        record.description ||
+        JSON.stringify(record),
+    );
+  }
+  return String(value);
+}
+
 function asStringList(value: unknown) {
-  return Array.isArray(value) ? value.map((entry) => String(entry)) : [];
+  return Array.isArray(value) ? value.map((entry) => summarizeValue(entry)) : [];
 }
 
 function asRecordList(value: unknown) {

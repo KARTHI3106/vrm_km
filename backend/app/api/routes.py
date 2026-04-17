@@ -30,6 +30,14 @@ from app.core.db import (
     check_db_health,
 )
 from app.core.redis_state import load_state, check_redis_health
+from app.core.agent_trace import get_agent_traces, get_persisted_traces
+from app.core.business_workflow import derive_business_workflow_snapshot
+from app.core.vendor_context import (
+    SUPPORTED_INGEST_EXTENSIONS,
+    infer_vendor_context_from_files,
+    is_placeholder_vendor_name,
+    is_supported_ingest_file,
+)
 from app.core.vector import (
     upsert_policy,
     init_collections,
@@ -71,6 +79,98 @@ class PolicyUploadRequest(BaseModel):
     category: str = "security"
     source: str = ""
     version: str = "1.0"
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _extract_vendor_from_prompt(prompt: str) -> VendorExtraction:
+    """Use the configured LLM to extract explicit onboarding details from the prompt."""
+    try:
+        llm = get_llm()
+        from langchain_core.output_parsers import PydanticOutputParser
+        from langchain_core.prompts import PromptTemplate
+
+        parser = PydanticOutputParser(pydantic_object=VendorExtraction)
+        prompt_template = PromptTemplate(
+            template=(
+                "Extract vendor onboarding details from the following command.\n"
+                "{format_instructions}\n\n"
+                "Command:\n{prompt}\n"
+            ),
+            input_variables=["prompt"],
+            partial_variables={"format_instructions": parser.get_format_instructions()},
+        )
+        chain = prompt_template | llm | parser
+        extraction = chain.invoke({"prompt": prompt})
+        return extraction
+    except Exception as exc:
+        logger.warning("Prompt extraction fallback used: %s", exc)
+        return VendorExtraction(vendor_name="", vendor_type="technology")
+
+
+def _safe_get_audit_logs(vendor_id: str) -> list[dict]:
+    try:
+        return get_audit_logs(vendor_id)
+    except Exception as exc:
+        logger.warning("Audit log retrieval failed for %s: %s", vendor_id, exc)
+        return []
+
+
+def _safe_get_documents(vendor_id: str) -> list[dict]:
+    try:
+        return get_documents_for_vendor(vendor_id)
+    except Exception as exc:
+        logger.warning("Document retrieval failed for %s: %s", vendor_id, exc)
+        return []
+
+
+def _safe_get_record(fetcher, vendor_id: str, label: str) -> Optional[dict]:
+    try:
+        return fetcher(vendor_id)
+    except Exception as exc:
+        logger.warning("%s retrieval failed for %s: %s", label, vendor_id, exc)
+        return None
+
+
+def _safe_get_collection(fetcher, vendor_id: str, label: str) -> list[dict]:
+    try:
+        return fetcher(vendor_id)
+    except Exception as exc:
+        logger.warning("%s retrieval failed for %s: %s", label, vendor_id, exc)
+        return []
+
+
+def _move_staged_files(staged_paths: list[str], vendor_id: str) -> list[str]:
+    settings = get_settings()
+    upload_dir = os.path.join(settings.upload_dir, vendor_id)
+    os.makedirs(upload_dir, exist_ok=True)
+    final_paths: list[str] = []
+    for staged_path in staged_paths:
+        final_path = os.path.join(upload_dir, os.path.basename(staged_path))
+        os.replace(staged_path, final_path)
+        final_paths.append(final_path)
+    return final_paths
+
+
+def _fallback_progress(vendor_status: str, risk: Optional[dict], approval: Optional[dict]) -> int:
+    if vendor_status in {"approved", "rejected", "conditional_approval", "review_completed"}:
+        return 100
+    if approval:
+        return 92
+    if risk:
+        return 75
+    if vendor_status == "processing":
+        return 10
+    if vendor_status == "error":
+        return 0
+    return 0
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -119,28 +219,79 @@ async def onboard_vendor(
     multi-agent workflow in the background.
     """
     try:
-        from app.core.llm import get_llm
-        llm = get_llm()
-        from langchain_core.output_parsers import PydanticOutputParser
-        from langchain_core.prompts import PromptTemplate
-        
-        parser = PydanticOutputParser(pydantic_object=VendorExtraction)
-        prompt_template = PromptTemplate(
-            template="Extract vendor onboarding details from the following command.\n{format_instructions}\n\nCommand:\n{prompt}\n",
-            input_variables=["prompt"],
-            partial_variables={"format_instructions": parser.get_format_instructions()}
+        unsupported_files = [
+            upload.filename
+            for upload in files
+            if upload.filename and not is_supported_ingest_file(upload.filename)
+        ]
+        if unsupported_files:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Unsupported file type uploaded.",
+                    "unsupported_files": unsupported_files,
+                    "supported_extensions": sorted(SUPPORTED_INGEST_EXTENSIONS),
+                },
+            )
+
+        extraction = _extract_vendor_from_prompt(prompt)
+
+        settings = get_settings()
+        staging_dir = os.path.join(settings.upload_dir, "_staging", str(uuid.uuid4()))
+        os.makedirs(staging_dir, exist_ok=True)
+
+        staged_paths: list[str] = []
+        for upload in files:
+            file_path = os.path.join(staging_dir, upload.filename)
+            content_bytes = await upload.read()
+            with open(file_path, "wb") as fp:
+                fp.write(content_bytes)
+            staged_paths.append(file_path)
+            logger.info("Saved staged file: %s", file_path)
+
+        enriched = infer_vendor_context_from_files(
+            staged_paths,
+            seed={
+                "vendor_name": extraction.vendor_name,
+                "vendor_type": extraction.vendor_type,
+                "contract_value": extraction.contract_value,
+                "vendor_domain": extraction.vendor_domain,
+                "contact_email": extraction.contact_email,
+                "contact_name": extraction.contact_name,
+            },
         )
-        chain = prompt_template | llm | parser
-        extraction = chain.invoke({"prompt": prompt})
-        # Create vendor record
+
+        if is_placeholder_vendor_name(enriched.get("vendor_name")) or not str(
+            enriched.get("vendor_name", "")
+        ).strip():
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Could not infer vendor identity from the prompt or uploaded documents.",
+                    "parse_notes": enriched.get("parse_notes", []),
+                    "supported_extensions": sorted(SUPPORTED_INGEST_EXTENSIONS),
+                },
+            )
+
         vendor_data = {
-            "name": extraction.vendor_name,
-            "vendor_type": extraction.vendor_type,
-            "contract_value": extraction.contract_value,
-            "domain": extraction.vendor_domain,
-            "contact_email": extraction.contact_email,
-            "contact_name": extraction.contact_name,
+            "name": enriched["vendor_name"],
+            "vendor_type": enriched.get("vendor_type") or "technology",
+            "contract_value": enriched.get("contract_value", 0.0) or 0.0,
+            "domain": enriched.get("vendor_domain", ""),
+            "contact_email": enriched.get("contact_email", ""),
+            "contact_name": enriched.get("contact_name", ""),
+            "industry": enriched.get("industry", ""),
             "status": "processing",
+            "metadata": {
+                "onboarding_prompt": prompt,
+                "ingest_basis": sorted(SUPPORTED_INGEST_EXTENSIONS),
+                "parse_notes": enriched.get("parse_notes", []),
+                "candidate_count": enriched.get("candidate_count", 0),
+                "business_workflow": {
+                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                    "initial_stage": "internal_request",
+                },
+            },
         }
         vendor = create_vendor(vendor_data)
         vendor_id = vendor.get("id")
@@ -148,38 +299,27 @@ async def onboard_vendor(
         if not vendor_id:
             raise HTTPException(status_code=500, detail="Failed to create vendor record")
 
-        # Save uploaded files
-        settings = get_settings()
-        upload_dir = os.path.join(settings.upload_dir, vendor_id)
-        os.makedirs(upload_dir, exist_ok=True)
-
-        file_paths = []
-        for f in files:
-            file_path = os.path.join(upload_dir, f.filename)
-            content_bytes = await f.read()
-            with open(file_path, "wb") as fp:
-                fp.write(content_bytes)
-            file_paths.append(file_path)
-            logger.info(f"Saved file: {file_path}")
+        file_paths = _move_staged_files(staged_paths, vendor_id)
 
         # Trigger the multi-agent workflow in the background
         background_tasks.add_task(
             _run_workflow_sync,
             vendor_id=vendor_id,
-            vendor_name=extraction.vendor_name,
-            vendor_type=extraction.vendor_type,
-            contract_value=extraction.contract_value,
-            vendor_domain=extraction.vendor_domain,
+            vendor_name=vendor_data["name"],
+            vendor_type=vendor_data["vendor_type"],
+            contract_value=float(vendor_data["contract_value"]),
+            vendor_domain=vendor_data["domain"],
             file_paths=file_paths,
         )
 
         return {
             "status": "accepted",
             "vendor_id": vendor_id,
-            "message": f"Vendor {extraction.vendor_name} onboarding started.",
+            "message": f"Vendor {vendor_data['name']} onboarding started.",
             "files_uploaded": [f.filename for f in files],
             "status_url": f"/api/v1/vendors/{vendor_id}/status",
             "report_url": f"/api/v1/vendors/{vendor_id}/report",
+            "parse_notes": enriched.get("parse_notes", []),
         }
 
     except HTTPException:
@@ -201,11 +341,19 @@ async def get_vendor_status(vendor_id: str):
 
     # Check Redis for active state
     active_state = load_state(vendor_id)
-    risk = get_risk_assessment(vendor_id)
-    approval = get_approval_request(vendor_id)
+    documents = _safe_get_documents(vendor_id)
+    security_review = _safe_get_record(get_security_review, vendor_id, "Security review")
+    compliance_review = _safe_get_record(get_compliance_review, vendor_id, "Compliance review")
+    financial_review = _safe_get_record(get_financial_review, vendor_id, "Financial review")
+    risk = _safe_get_record(get_risk_assessment, vendor_id, "Risk assessment")
+    approval = _safe_get_record(get_approval_request, vendor_id, "Approval request")
+    should_load_audit_errors = (
+        vendor.get("status") == "error"
+        or (active_state and (active_state.get("errors") or active_state.get("current_phase") == "error"))
+    )
+    audit_logs = _safe_get_audit_logs(vendor_id) if should_load_audit_errors else []
 
     # Surface agent-level errors from the audit log to the caller
-    audit_logs = get_audit_logs(vendor_id)
     agent_errors = [
         {
             "agent": log.get("agent_name"),
@@ -219,37 +367,72 @@ async def get_vendor_status(vendor_id: str):
 
     # Also pull any errors stored in Redis state (e.g. from intake partial failures)
     state_errors = active_state.get("errors", []) if active_state else []
+    supervisor_packet_ready = any(
+        log.get("agent_name") == "supervisor"
+        and log.get("action") == "final_packet_completed"
+        and log.get("status") != "error"
+        for log in audit_logs
+    )
+
+    current_phase = active_state.get("current_phase") if active_state else vendor.get("status")
+    progress_percentage = (
+        active_state.get("progress_percentage", 0)
+        if active_state
+        else _fallback_progress(vendor.get("status", ""), risk, approval)
+    )
+    if progress_percentage >= 100 and not (risk and supervisor_packet_ready):
+        progress_percentage = 90 if risk else 60
+        current_phase = "review_incomplete" if risk else "downstream_pending"
+
+    workflow = derive_business_workflow_snapshot(
+        vendor=vendor,
+        documents=documents,
+        security_review=security_review,
+        compliance_review=compliance_review,
+        financial_review=financial_review,
+        risk_assessment=risk,
+        approval=approval,
+        active_state=active_state,
+    )
 
     return {
         "vendor_id": vendor_id,
         "vendor_name": vendor.get("name"),
         "vendor_type": vendor.get("vendor_type"),
         "vendor_domain": vendor.get("domain"),
-        "contract_value": float(vendor.get("contract_value", 0)),
+        "contract_value": _safe_float(vendor.get("contract_value", 0)),
         "contact_email": vendor.get("contact_email"),
         "status": vendor.get("status"),
-        "current_phase": (
-            active_state.get("current_phase") if active_state else vendor.get("status")
-        ),
+        "current_phase": current_phase,
         "current_agent": (
             active_state.get("current_agent", "") if active_state else ""
         ),
         "current_step": (
             active_state.get("current_step", "") if active_state else ""
         ),
-        "progress_percentage": (
-            active_state.get("progress_percentage", 0) if active_state else (
-                100 if vendor.get("status") == "review_completed" else 0
-            )
-        ),
+        "progress_percentage": progress_percentage,
+        "workflow_stage": workflow["workflow_stage"],
+        "workflow_stage_label": workflow["workflow_stage_label"],
+        "workflow_progress_percentage": workflow["workflow_progress_percentage"],
+        "workflow_stages": workflow["workflow_stages"],
+        "risk_tier": workflow["risk_tier"],
+        "risk_tier_label": workflow["risk_tier_label"],
+        "risk_tier_rationale": workflow["risk_tier_rationale"],
+        "required_documents": workflow["required_documents"],
+        "missing_required_documents": workflow["missing_required_documents"],
+        "required_legal_documents": workflow["required_legal_documents"],
+        "missing_legal_documents": workflow["missing_legal_documents"],
+        "approval_departments": workflow["approval_departments"],
+        "operational_tasks": workflow["operational_tasks"],
         "errors": state_errors,
         "agent_errors": agent_errors,
         "has_errors": bool(agent_errors or state_errors),
-        "overall_risk_score": float(risk.get("overall_risk_score", 0)) if risk else None,
+        "overall_risk_score": _safe_float(risk.get("overall_risk_score"), 0.0) if risk else None,
         "risk_level": risk.get("risk_level") if risk else None,
         "approval_tier": risk.get("approval_tier") if risk else None,
         "approval_status": approval.get("status") if approval else None,
         "approval_id": approval.get("id") if approval else None,
+        "supervisor_packet_ready": supervisor_packet_ready,
     }
 
 
@@ -262,21 +445,31 @@ async def get_vendor_report(vendor_id: str):
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
 
-    documents = get_documents_for_vendor(vendor_id)
-    security_review = get_security_review(vendor_id)
-    compliance_rev = get_compliance_review(vendor_id)
-    financial_rev = get_financial_review(vendor_id)
-    risk_assessment = get_risk_assessment(vendor_id)
-    approval = get_approval_request(vendor_id)
-    evidence_reqs = get_evidence_requests(vendor_id)
-    audit_trail = get_audit_logs(vendor_id)
+    documents = _safe_get_documents(vendor_id)
+    security_review = _safe_get_record(get_security_review, vendor_id, "Security review")
+    compliance_rev = _safe_get_record(get_compliance_review, vendor_id, "Compliance review")
+    financial_rev = _safe_get_record(get_financial_review, vendor_id, "Financial review")
+    risk_assessment = _safe_get_record(get_risk_assessment, vendor_id, "Risk assessment")
+    approval = _safe_get_record(get_approval_request, vendor_id, "Approval request")
+    evidence_reqs = _safe_get_collection(get_evidence_requests, vendor_id, "Evidence requests")
+    audit_trail = _safe_get_audit_logs(vendor_id)
+    workflow = derive_business_workflow_snapshot(
+        vendor=vendor,
+        documents=documents,
+        security_review=security_review,
+        compliance_review=compliance_rev,
+        financial_review=financial_rev,
+        risk_assessment=risk_assessment,
+        approval=approval,
+        active_state=load_state(vendor_id),
+    )
 
     return {
         "vendor": {
             "id": vendor.get("id"),
             "name": vendor.get("name"),
             "type": vendor.get("vendor_type"),
-            "contract_value": float(vendor.get("contract_value", 0)),
+            "contract_value": _safe_float(vendor.get("contract_value", 0)),
             "domain": vendor.get("domain"),
             "status": vendor.get("status"),
         },
@@ -292,14 +485,24 @@ async def get_vendor_report(vendor_id: str):
                     ),
                     "processing_status": d.get("processing_status"),
                     "extracted_dates": d.get("extracted_dates", {}),
+                    "extracted_metadata": d.get("extracted_metadata", {}),
                 }
                 for d in documents
             ],
         },
         "security_review": (
             {
-                "overall_score": float(security_review.get("overall_score", 0)),
+                "overall_score": _safe_float(security_review.get("overall_score", 0)),
                 "grade": security_review.get("grade"),
+                "component_scores": {
+                    "certificates": _safe_float(security_review.get("certificate_score", 0)),
+                    "domain_security": _safe_float(security_review.get("domain_security_score", 0)),
+                    "breach_history": _safe_float(security_review.get("breach_history_score", 0)),
+                    "questionnaire": _safe_float(security_review.get("questionnaire_score", 0)),
+                },
+                "findings": security_review.get("findings", []),
+                "critical_issues": security_review.get("critical_issues", []),
+                "recommendations": security_review.get("recommendations", []),
                 "status": security_review.get("status"),
                 "report": security_review.get("report", {}),
             }
@@ -308,8 +511,19 @@ async def get_vendor_report(vendor_id: str):
         ),
         "compliance_review": (
             {
-                "overall_score": float(compliance_rev.get("overall_score", 0)),
+                "overall_score": _safe_float(compliance_rev.get("overall_score", 0)),
                 "grade": compliance_rev.get("grade"),
+                "component_scores": {
+                    "gdpr": _safe_float(compliance_rev.get("gdpr_score", 0)),
+                    "hipaa": _safe_float(compliance_rev.get("hipaa_score", 0)),
+                    "pci": _safe_float(compliance_rev.get("pci_score", 0)),
+                    "dpa": _safe_float(compliance_rev.get("dpa_score", 0)),
+                    "privacy_policy": _safe_float(compliance_rev.get("privacy_policy_score", 0)),
+                },
+                "applicable_regulations": compliance_rev.get("applicable_regulations", []),
+                "findings": compliance_rev.get("findings", []),
+                "gaps": compliance_rev.get("gaps", []),
+                "recommendations": compliance_rev.get("recommendations", []),
                 "status": compliance_rev.get("status"),
                 "report": compliance_rev.get("report", {}),
             }
@@ -318,8 +532,19 @@ async def get_vendor_report(vendor_id: str):
         ),
         "financial_review": (
             {
-                "overall_score": float(financial_rev.get("overall_score", 0)),
+                "overall_score": _safe_float(financial_rev.get("overall_score", 0)),
                 "grade": financial_rev.get("grade"),
+                "component_scores": {
+                    "insurance": _safe_float(financial_rev.get("insurance_score", 0)),
+                    "credit_rating": _safe_float(financial_rev.get("credit_rating_score", 0)),
+                    "financial_stability": _safe_float(financial_rev.get("financial_stability_score", 0)),
+                    "bcp": _safe_float(financial_rev.get("bcp_score", 0)),
+                },
+                "insurance_details": financial_rev.get("insurance_details", {}),
+                "credit_details": financial_rev.get("credit_details", {}),
+                "financial_analysis": financial_rev.get("financial_analysis", {}),
+                "findings": financial_rev.get("findings", []),
+                "recommendations": financial_rev.get("recommendations", []),
                 "status": financial_rev.get("status"),
                 "report": financial_rev.get("report", {}),
             }
@@ -328,7 +553,7 @@ async def get_vendor_report(vendor_id: str):
         ),
         "risk_assessment": (
             {
-                "overall_risk_score": float(risk_assessment.get("overall_risk_score", 0)),
+                "overall_risk_score": _safe_float(risk_assessment.get("overall_risk_score", 0)),
                 "risk_level": risk_assessment.get("risk_level"),
                 "approval_tier": risk_assessment.get("approval_tier"),
                 "executive_summary": risk_assessment.get("executive_summary"),
@@ -353,7 +578,9 @@ async def get_vendor_report(vendor_id: str):
             "total": len(evidence_reqs),
             "pending": sum(1 for r in evidence_reqs if r.get("status") == "pending"),
             "received": sum(1 for r in evidence_reqs if r.get("status") == "received"),
+            "items": evidence_reqs,
         },
+        "business_workflow": workflow,
         "audit_trail": [
             {
                 "agent": log.get("agent_name"),
@@ -382,6 +609,21 @@ async def upload_additional_documents(
     vendor = get_vendor(vendor_id)
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
+
+    unsupported_files = [
+        upload.filename
+        for upload in files
+        if upload.filename and not is_supported_ingest_file(upload.filename)
+    ]
+    if unsupported_files:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Unsupported file type uploaded.",
+                "unsupported_files": unsupported_files,
+                "supported_extensions": sorted(SUPPORTED_INGEST_EXTENSIONS),
+            },
+        )
 
     settings = get_settings()
     upload_dir = os.path.join(settings.upload_dir, vendor_id)
@@ -463,13 +705,13 @@ async def get_security_findings(vendor_id: str):
         "vendor_id": vendor_id,
         "vendor_name": vendor.get("name"),
         "security_review": {
-            "overall_score": float(review.get("overall_score", 0)),
+            "overall_score": _safe_float(review.get("overall_score", 0)),
             "grade": review.get("grade"),
             "component_scores": {
-                "certificates": float(review.get("certificate_score", 0)),
-                "domain_security": float(review.get("domain_security_score", 0)),
-                "breach_history": float(review.get("breach_history_score", 0)),
-                "questionnaire": float(review.get("questionnaire_score", 0)),
+                "certificates": _safe_float(review.get("certificate_score", 0)),
+                "domain_security": _safe_float(review.get("domain_security_score", 0)),
+                "breach_history": _safe_float(review.get("breach_history_score", 0)),
+                "questionnaire": _safe_float(review.get("questionnaire_score", 0)),
             },
             "findings": review.get("findings", []),
             "critical_issues": review.get("critical_issues", []),
@@ -504,14 +746,14 @@ async def get_compliance_findings(vendor_id: str):
         "vendor_id": vendor_id,
         "vendor_name": vendor.get("name"),
         "compliance_review": {
-            "overall_score": float(review.get("overall_score", 0)),
+            "overall_score": _safe_float(review.get("overall_score", 0)),
             "grade": review.get("grade"),
             "component_scores": {
-                "gdpr": float(review.get("gdpr_score", 0)),
-                "hipaa": float(review.get("hipaa_score", 0)),
-                "pci": float(review.get("pci_score", 0)),
-                "dpa": float(review.get("dpa_score", 0)),
-                "privacy_policy": float(review.get("privacy_policy_score", 0)),
+                "gdpr": _safe_float(review.get("gdpr_score", 0)),
+                "hipaa": _safe_float(review.get("hipaa_score", 0)),
+                "pci": _safe_float(review.get("pci_score", 0)),
+                "dpa": _safe_float(review.get("dpa_score", 0)),
+                "privacy_policy": _safe_float(review.get("privacy_policy_score", 0)),
             },
             "applicable_regulations": review.get("applicable_regulations", []),
             "findings": review.get("findings", []),
@@ -546,13 +788,13 @@ async def get_financial_findings(vendor_id: str):
         "vendor_id": vendor_id,
         "vendor_name": vendor.get("name"),
         "financial_review": {
-            "overall_score": float(review.get("overall_score", 0)),
+            "overall_score": _safe_float(review.get("overall_score", 0)),
             "grade": review.get("grade"),
             "component_scores": {
-                "insurance": float(review.get("insurance_score", 0)),
-                "credit_rating": float(review.get("credit_rating_score", 0)),
-                "financial_stability": float(review.get("financial_stability_score", 0)),
-                "bcp": float(review.get("bcp_score", 0)),
+                "insurance": _safe_float(review.get("insurance_score", 0)),
+                "credit_rating": _safe_float(review.get("credit_rating_score", 0)),
+                "financial_stability": _safe_float(review.get("financial_stability_score", 0)),
+                "bcp": _safe_float(review.get("bcp_score", 0)),
             },
             "insurance_details": review.get("insurance_details", {}),
             "credit_details": review.get("credit_details", {}),
@@ -781,7 +1023,8 @@ async def health_check():
     vector_ok = check_vector_health()
     llm_status = check_llm_health()
 
-    all_healthy = db_ok and redis_ok and vector_ok and llm_status.get("ollama", False)
+    llm_ok = llm_status.get("openai", False) or llm_status.get("groq", False)
+    all_healthy = db_ok and redis_ok and vector_ok and llm_ok
 
     return {
         "status": "healthy" if all_healthy else "degraded",
@@ -791,8 +1034,42 @@ async def health_check():
             "redis": {"status": "up" if redis_ok else "down"},
             "vector_store": {"status": "up" if vector_ok else "down", "type": "qdrant"},
             "llm": {
-                "ollama": "up" if llm_status.get("ollama") else "down",
+                "openai": "up" if llm_status.get("openai") else "down",
                 "groq": "up" if llm_status.get("groq") else "down",
+                "primary": "openai" if llm_status.get("openai") else "groq" if llm_status.get("groq") else "unavailable",
             },
         },
+    }
+
+
+@router.get("/vendors/{vendor_id}/traces")
+async def get_vendor_traces(vendor_id: str):
+    """
+    Get structured agent trace logs showing workflow intent, tool usage, and outputs.
+    Raw private chain-of-thought is not exposed.
+    """
+    vendor = get_vendor(vendor_id)
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    # Get both in-memory and persisted traces
+    live_traces = get_agent_traces(vendor_id)
+    persisted_traces = get_persisted_traces(vendor_id)
+    
+    # Merge and deduplicate by trace_id
+    all_traces = {}
+    for trace in persisted_traces + live_traces:
+        tid = trace.get("trace_id", str(hash(str(trace))))
+        all_traces[tid] = trace
+    
+    # Sort by timestamp
+    sorted_traces = sorted(
+        all_traces.values(),
+        key=lambda t: t.get("timestamp", "")
+    )
+
+    return {
+        "vendor_id": vendor_id,
+        "total_traces": len(sorted_traces),
+        "traces": sorted_traces,
     }

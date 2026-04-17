@@ -257,6 +257,7 @@ class TestGraphWorkflowRepair:
     @patch("app.agents.graph.load_state", return_value={})
     @patch("app.agents.graph.publish_event")
     @patch("app.agents.graph.create_audit_log")
+    @patch("app.agents.graph.update_vendor")
     @patch("app.agents.graph.run_supervisor", return_value={"status": "success", "approval_status": "pending"})
     @patch(
         "app.agents.graph.run_approval_orchestrator",
@@ -281,6 +282,7 @@ class TestGraphWorkflowRepair:
         mock_risk,
         mock_approval,
         mock_supervisor,
+        mock_update_vendor,
         mock_audit,
         mock_publish,
         mock_load_state,

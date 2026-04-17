@@ -1,201 +1,425 @@
 """
-Evidence Coordinator Agent — post-review gap analysis and consolidated collection.
+Evidence Coordinator Agent - deterministic post-review evidence orchestration.
 
-**Runs AFTER supervisor_aggregate_node** so it has access to all three
-domain review results.  This enables:
-  - Consolidated gap identification across security, compliance, and financial reviews
-  - A single deduplicated evidence request email (no vendor spam)
-  - Prioritised evidence collection based on review findings
-
-Uses ReAct pattern with 8 evidence tools.
+This phase intentionally persists evidence requests and tracking records even
+when email delivery is mocked or unavailable.
 """
+from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
-from langchain_core.messages import HumanMessage
-from langgraph.prebuilt import create_react_agent
-
-from app.core.llm import get_tool_llm
-from app.core.db import (
-    get_vendor,
-    get_documents_for_vendor,
-    get_security_review,
-    get_compliance_review,
-    get_financial_review,
+from app.core.agent_trace import (
+    trace_agent_complete,
+    trace_agent_decision,
+    trace_agent_error,
+    trace_agent_start,
+    trace_agent_thinking,
+    trace_tool_call,
 )
-from app.core.redis_state import load_state
+from app.core.db import (
+    create_evidence_request,
+    create_evidence_tracking_entry,
+    get_compliance_review,
+    get_documents_for_vendor,
+    get_evidence_requests,
+    get_financial_review,
+    get_security_review,
+    get_vendor,
+    update_evidence_request,
+)
 from app.core.events import publish_event
-from app.tools.evidence_tools import EVIDENCE_TOOLS
+from app.tools.evidence_tools import (
+    compare_required_vs_submitted,
+    create_followup_task,
+    generate_evidence_request_email,
+    get_required_documents,
+    send_email,
+    track_document_status,
+)
 
 logger = logging.getLogger(__name__)
 
-EVIDENCE_SYSTEM_PROMPT = """You are the Evidence Coordinator Agent for the Vendorsols Vendor Risk Assessment System.
-Your role is to identify missing evidence and coordinate its collection.
 
-IMPORTANT: You are running AFTER the Security, Compliance, and Financial review
-agents have completed.  You have their aggregated findings and identified gaps.
-
-## Your Capabilities
-You have 8 specialized tools:
-1. get_required_documents — Determine required documents by vendor type
-2. compare_required_vs_submitted — Gap analysis of submitted vs required
-3. generate_evidence_request_email — Generate professional request email
-4. send_email — Send email via Mailtrap
-5. create_followup_task — Create internal follow-up task
-6. track_document_status — Check status of all evidence requests
-7. send_reminder_email — Send reminder for outstanding docs
-8. update_evidence_log — Log evidence tracking actions
-
-## Workflow
-1. Review the aggregated findings from all three domain reviews.
-2. Determine what documents are required for this vendor type and contract value.
-3. Compare required documents against what has been submitted.
-4. CONSOLIDATE all gaps from all three reviews into a single prioritised list.
-5. Generate ONE professional email listing ALL missing documents (not multiple emails).
-6. Send the evidence request email to the vendor contact.
-7. Create a follow-up task for the internal procurement team.
-8. Update the evidence log with all actions taken.
-
-## Decision Making
-- Prioritize "required" documents over "recommended" and "optional"
-- Set deadline based on criticality (7 days for critical, 14 for standard)
-- Be professional and clear in all communications
-- If no contact email is available, log the request but skip email
-- Always create follow-up tasks for the internal team
-- DEDUPLICATE: If multiple reviews flag the same missing document, list it once
-
-## Output
-Summarize what evidence is missing and what actions were taken."""
+def _parse_json(value: str | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+    except Exception:
+        return {}
 
 
-def _build_review_context(vendor_id: str) -> str:
-    """Build a context string from completed review results for the agent.
+def _normalize_document_type(document_type: str) -> str:
+    return str(document_type or "").strip().lower().replace(" ", "_")
 
-    Pulls from both DB review records and the Redis shared context to give
-    the evidence coordinator full visibility into what the reviews found.
-    """
-    parts: list[str] = []
 
-    # Pull shared context written by supervisor_aggregate_node
-    shared_ctx = load_state(f"shared_context:{vendor_id}") or {}
-    if shared_ctx:
-        parts.append("## AGGREGATED REVIEW CONTEXT (from supervisor)")
-        for domain in ("security", "compliance", "financial"):
-            info = shared_ctx.get(domain, {})
-            if info:
-                parts.append(
-                    f"  {domain.title()}: score={info.get('score', 'N/A')}, "
-                    f"grade={info.get('grade', 'N/A')}, "
-                    f"critical_flags={info.get('critical_flags', [])}, "
-                    f"data_warnings={info.get('data_warnings', [])}"
-                )
+def _deadline_days(criticality: str) -> int:
+    return 7 if str(criticality).lower() == "required" else 14
 
-    # Pull from DB for more detailed gaps/recommendations
-    sec = get_security_review(vendor_id)
-    if sec:
-        parts.append(f"\n## Security Review Summary")
-        parts.append(f"  Score: {sec.get('overall_score', 'N/A')}, Grade: {sec.get('grade', 'N/A')}")
-        findings = sec.get("findings", [])
-        if findings:
-            parts.append(f"  Findings ({len(findings)}): {str(findings[:5])[:500]}")
-        critical = sec.get("critical_issues", [])
-        if critical:
-            parts.append(f"  Critical issues: {str(critical)[:500]}")
 
-    comp = get_compliance_review(vendor_id)
-    if comp:
-        parts.append(f"\n## Compliance Review Summary")
-        parts.append(f"  Score: {comp.get('overall_score', 'N/A')}, Grade: {comp.get('grade', 'N/A')}")
-        gaps = comp.get("gaps", [])
-        if gaps:
-            parts.append(f"  Compliance gaps ({len(gaps)}): {str(gaps[:5])[:500]}")
+def _required_gap_candidates(vendor_id: str, vendor: dict[str, Any]) -> list[dict[str, Any]]:
+    required_raw = get_required_documents.invoke(
+        {
+            "vendor_type": vendor.get("vendor_type", "technology"),
+            "contract_value": float(vendor.get("contract_value", 0) or 0),
+        }
+    )
+    required_payload = _parse_json(required_raw)
+    compare_raw = compare_required_vs_submitted.invoke(
+        {
+            "vendor_id": vendor_id,
+            "required_docs_json": json.dumps(required_payload),
+        }
+    )
+    compare_payload = _parse_json(compare_raw)
+    candidates = []
+    for item in compare_payload.get("missing_documents", []):
+        candidates.append(
+            {
+                "document_type": _normalize_document_type(item.get("type")),
+                "criticality": item.get("criticality", "required"),
+                "reason": item.get("reason", "Required evidence remains outstanding."),
+                "source": "requirements",
+            }
+        )
+    return candidates
 
-    fin = get_financial_review(vendor_id)
-    if fin:
-        parts.append(f"\n## Financial Review Summary")
-        parts.append(f"  Score: {fin.get('overall_score', 'N/A')}, Grade: {fin.get('grade', 'N/A')}")
-        recs = fin.get("recommendations", [])
-        if recs:
-            parts.append(f"  Recommendations: {str(recs[:5])[:500]}")
 
-    if not parts:
-        return "No review results available yet."
+def _review_gap_candidates(security: dict[str, Any], compliance: dict[str, Any], financial: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
 
-    return "\n".join(parts)
+    if security:
+        if float(security.get("certificate_score", 0) or 0) <= 0:
+            candidates.append(
+                {
+                    "document_type": "soc2_report",
+                    "criticality": "required",
+                    "reason": "Security review could not validate independent security assurance.",
+                    "source": "security_review",
+                }
+            )
+        if float(security.get("questionnaire_score", 0) or 0) <= 50:
+            candidates.append(
+                {
+                    "document_type": "security_questionnaire",
+                    "criticality": "required",
+                    "reason": "Security questionnaire evidence is missing or incomplete.",
+                    "source": "security_review",
+                }
+            )
+
+    for gap in compliance.get("gaps", []) or []:
+        candidates.append(
+            {
+                "document_type": _normalize_document_type(
+                    gap.get("document_type")
+                    or gap.get("requirement")
+                    or "compliance_supporting_document"
+                ),
+                "criticality": gap.get("criticality", "required"),
+                "reason": gap.get("description", "Compliance remediation evidence is required."),
+                "source": "compliance_review",
+            }
+        )
+
+    if financial:
+        if float(financial.get("insurance_score", 0) or 0) <= 0:
+            candidates.append(
+                {
+                    "document_type": "insurance_certificate",
+                    "criticality": "required",
+                    "reason": "Financial review could not validate insurance coverage.",
+                    "source": "financial_review",
+                }
+            )
+        if float(financial.get("financial_stability_score", 50) or 50) <= 50:
+            candidates.append(
+                {
+                    "document_type": "financial_statement",
+                    "criticality": "required",
+                    "reason": "Financial stability evidence is missing or insufficient.",
+                    "source": "financial_review",
+                }
+            )
+        if float(financial.get("bcp_score", 0) or 0) <= 0:
+            candidates.append(
+                {
+                    "document_type": "business_continuity_plan",
+                    "criticality": "recommended",
+                    "reason": "Business continuity evidence is missing or incomplete.",
+                    "source": "financial_review",
+                }
+            )
+
+    return candidates
+
+
+def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        document_type = _normalize_document_type(candidate.get("document_type"))
+        if not document_type:
+            continue
+        current = deduped.get(document_type)
+        if not current:
+            deduped[document_type] = {
+                "document_type": document_type,
+                "criticality": candidate.get("criticality", "required"),
+                "reason": candidate.get("reason", "Evidence required."),
+                "source": [candidate.get("source", "workflow")],
+            }
+            continue
+        if current["criticality"] != "required" and candidate.get("criticality") == "required":
+            current["criticality"] = "required"
+        current["reason"] = current["reason"] or candidate.get("reason", "")
+        current["source"] = sorted(set([*current.get("source", []), candidate.get("source", "workflow")]))
+    return list(deduped.values())
+
+
+def _persist_evidence_requests(vendor: dict[str, Any], candidates: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    vendor_id = vendor["id"]
+    existing_requests = get_evidence_requests(vendor_id)
+    existing_by_type = {
+        _normalize_document_type(request.get("document_type")): request
+        for request in existing_requests
+    }
+    created: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    for candidate in candidates:
+        document_type = candidate["document_type"]
+        existing = existing_by_type.get(document_type)
+        if existing and existing.get("status") in {"pending", "received", "reviewed"}:
+            skipped.append(
+                {
+                    "document_type": document_type,
+                    "existing_status": existing.get("status"),
+                    "request_id": existing.get("id"),
+                }
+            )
+            create_evidence_tracking_entry(
+                {
+                    "vendor_id": vendor_id,
+                    "evidence_request_id": existing.get("id"),
+                    "action": "request_deduplicated",
+                    "actor": "evidence_coordinator",
+                    "details": {
+                        "document_type": document_type,
+                        "existing_status": existing.get("status"),
+                    },
+                }
+            )
+            continue
+
+        deadline = (datetime.now(timezone.utc) + timedelta(days=_deadline_days(candidate["criticality"]))).date().isoformat()
+        created_request = create_evidence_request(
+            {
+                "vendor_id": vendor_id,
+                "document_type": document_type,
+                "criticality": candidate["criticality"],
+                "reason": candidate["reason"],
+                "email_recipient": vendor.get("contact_email"),
+                "deadline": deadline,
+                "notes": f"Generated from {', '.join(candidate.get('source', []))}.",
+            }
+        )
+        created.append(created_request)
+        create_evidence_tracking_entry(
+            {
+                "vendor_id": vendor_id,
+                "evidence_request_id": created_request.get("id"),
+                "action": "evidence_requested",
+                "actor": "evidence_coordinator",
+                "details": {
+                    "document_type": document_type,
+                    "criticality": candidate["criticality"],
+                    "reason": candidate["reason"],
+                    "source": candidate.get("source", []),
+                },
+            }
+        )
+    return created, skipped
 
 
 def run_evidence_coordinator(vendor_id: str) -> dict:
-    """
-    Execute the evidence coordination for a vendor.
-
-    Now runs AFTER all three domain reviews, enabling consolidated
-    gap identification and a single evidence request email.
-
-    Returns a dict with status, gaps identified, and actions taken.
-    """
+    """Persist deduplicated evidence requests and workflow notes."""
     try:
         vendor = get_vendor(vendor_id)
         if not vendor:
             return {"status": "error", "error": f"Vendor {vendor_id} not found"}
 
+        trace_id = trace_agent_start(
+            vendor_id,
+            "evidence_coordinator",
+            {
+                "vendor_name": vendor.get("name"),
+                "vendor_type": vendor.get("vendor_type"),
+                "contact_email": vendor.get("contact_email"),
+            },
+        )
+        publish_event(
+            vendor_id,
+            "tool_status",
+            {
+                "phase": "evidence_coordination",
+                "tool_name": "agent_start",
+                "status": "calling",
+            },
+        )
+        trace_agent_thinking(
+            vendor_id,
+            "evidence_coordinator",
+            "Reconciling required documents with submitted evidence and review-derived gaps, then persisting deduplicated requests.",
+            trace_id=trace_id,
+        )
+
         documents = get_documents_for_vendor(vendor_id)
+        security = get_security_review(vendor_id) or {}
+        compliance = get_compliance_review(vendor_id) or {}
+        financial = get_financial_review(vendor_id) or {}
 
-        publish_event(vendor_id, "tool_status", {
-            "phase": "evidence_coordination", "tool_name": "agent_start", "status": "calling"
-        })
+        required_candidates = _required_gap_candidates(vendor_id, vendor)
+        review_candidates = _review_gap_candidates(security, compliance, financial)
+        candidates = _dedupe_candidates([*required_candidates, *review_candidates])
+        created_requests, skipped_requests = _persist_evidence_requests(vendor, candidates)
 
-        doc_summaries = []
-        for doc in documents:
-            cls = doc.get("classification", "unknown")
-            doc_summaries.append(f"- {doc['file_name']} (classified: {cls})")
+        trace_agent_decision(
+            vendor_id,
+            "evidence_coordinator",
+            "Evidence request set derived from workflow requirements and review gaps.",
+            {
+                "submitted_documents": len(documents),
+                "candidate_count": len(candidates),
+                "created_requests": len(created_requests),
+                "skipped_requests": len(skipped_requests),
+            },
+            trace_id=trace_id,
+        )
 
-        # Build context from completed reviews
-        review_context = _build_review_context(vendor_id)
-
-        context_msg = f"""Coordinate evidence collection for vendor: {vendor.get('name')}
-Vendor type: {vendor.get('vendor_type', 'unknown')}
-Contract value: ${float(vendor.get('contract_value', 0)):,.2f}
-Contact email: {vendor.get('contact_email', 'not provided')}
-Contact name: {vendor.get('contact_name', 'Vendor Contact')}
-
-Currently submitted documents:
-{chr(10).join(doc_summaries) if doc_summaries else 'No documents submitted yet.'}
-
-─────────────────────────────────────────────────────────
-COMPLETED REVIEW RESULTS (use these to identify evidence gaps):
-─────────────────────────────────────────────────────────
-{review_context}
-─────────────────────────────────────────────────────────
-
-Instructions:
-1. Review the aggregated findings above to understand what evidence is missing.
-2. Use get_required_documents to determine what's needed for this vendor type.
-3. Use compare_required_vs_submitted to find gaps.
-4. CONSOLIDATE all gaps from all three reviews into a SINGLE prioritised list.
-5. Generate ONE comprehensive email listing ALL missing documents (not multiple emails).
-6. If vendor has contact email, send the evidence request email.
-7. Create a follow-up task for the procurement team.
-8. Provide a summary of gaps and actions taken."""
-
-        llm = get_tool_llm()
-        agent = create_react_agent(llm, EVIDENCE_TOOLS, prompt=EVIDENCE_SYSTEM_PROMPT)
-
-        result = agent.invoke({"messages": [HumanMessage(content=context_msg)]})
-
-        messages = result.get("messages", [])
-        final_msg = messages[-1].content if messages else "No response"
-
-        publish_event(vendor_id, "tool_status", {
-            "phase": "evidence_coordination", "tool_name": "agent_end", "status": "complete"
-        })
-
-        return {
-            "status": "success",
-            "agent_output": final_msg[:3000],
+        email_result: dict[str, Any] = {
+            "status": "skipped",
+            "delivery": "not_required",
         }
+        if created_requests and vendor.get("contact_email"):
+            missing_documents = [
+                {
+                    "type": request.get("document_type"),
+                    "reason": request.get("reason"),
+                }
+                for request in created_requests
+            ]
+            email_raw = generate_evidence_request_email.invoke(
+                {
+                    "vendor_name": vendor.get("name", "Vendor"),
+                    "contact_name": vendor.get("contact_name") or "Vendor Contact",
+                    "missing_documents_json": json.dumps(missing_documents),
+                    "deadline_days": 7 if any(request.get("criticality") == "required" for request in created_requests) else 14,
+                }
+            )
+            email_payload = _parse_json(email_raw)
+            send_raw = send_email.invoke(
+                {
+                    "to_email": vendor.get("contact_email"),
+                    "subject": email_payload.get("subject", f"Document Request - {vendor.get('name', 'Vendor')}"),
+                    "body": email_payload.get("body", ""),
+                    "vendor_id": vendor_id,
+                }
+            )
+            email_result = _parse_json(send_raw)
+            trace_tool_call(
+                vendor_id,
+                "evidence_coordinator",
+                "send_email",
+                {"recipient": vendor.get("contact_email"), "request_count": len(created_requests)},
+                email_result.get("status", "success"),
+                email_result.get("delivery"),
+                trace_id=trace_id,
+            )
+            if email_result.get("status") == "success":
+                sent_at = datetime.now(timezone.utc).isoformat()
+                for request in created_requests:
+                    if request.get("id"):
+                        update_evidence_request(
+                            request["id"],
+                            {
+                                "email_sent": True,
+                                "email_sent_at": sent_at,
+                                "email_recipient": vendor.get("contact_email"),
+                            },
+                        )
+                        create_evidence_tracking_entry(
+                            {
+                                "vendor_id": vendor_id,
+                                "evidence_request_id": request["id"],
+                                "action": "request_sent",
+                                "actor": "evidence_coordinator",
+                                "details": {
+                                    "recipient": vendor.get("contact_email"),
+                                    "delivery": email_result.get("delivery"),
+                                },
+                            }
+                        )
+        elif created_requests:
+            create_evidence_tracking_entry(
+                {
+                    "vendor_id": vendor_id,
+                    "action": "email_skipped_no_contact",
+                    "actor": "evidence_coordinator",
+                    "details": {
+                        "request_count": len(created_requests),
+                    },
+                }
+            )
 
-    except Exception as e:
-        logger.error(f"Evidence coordinator failed for vendor {vendor_id}: {e}")
-        return {"status": "error", "error": str(e)}
+        followup_payload = _parse_json(
+            create_followup_task.invoke(
+                {
+                    "vendor_id": vendor_id,
+                    "task_description": (
+                        f"Follow up on {len(created_requests)} evidence request(s) for {vendor.get('name', 'vendor')}."
+                    ),
+                    "assigned_to": "procurement",
+                    "due_days": 7,
+                }
+            )
+        )
+        status_payload = _parse_json(track_document_status.invoke({"vendor_id": vendor_id}))
+
+        publish_event(
+            vendor_id,
+            "tool_status",
+            {
+                "phase": "evidence_coordination",
+                "tool_name": "agent_end",
+                "status": "complete",
+            },
+        )
+        result = {
+            "status": "success",
+            "vendor_id": vendor_id,
+            "requests_created": len(created_requests),
+            "requests_skipped": len(skipped_requests),
+            "email_delivery": email_result.get("delivery"),
+            "tracking_summary": status_payload,
+            "followup_task": followup_payload,
+            "db_write_summary": {
+                "created_requests": len(created_requests),
+                "skipped_requests": len(skipped_requests),
+            },
+        }
+        trace_agent_complete(vendor_id, "evidence_coordinator", result, trace_id=trace_id)
+        return result
+
+    except Exception as exc:
+        logger.error("Evidence coordinator failed for vendor %s: %s", vendor_id, exc)
+        trace_agent_error(
+            vendor_id,
+            "evidence_coordinator",
+            str(exc),
+            error_type=type(exc).__name__,
+        )
+        return {"status": "error", "error": str(exc)}

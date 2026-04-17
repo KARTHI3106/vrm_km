@@ -10,8 +10,13 @@ export interface VendorSummary {
   updated_at?: string;
   overall_risk_score?: number | null;
   risk_level?: string | null;
+  risk_tier?: string | null;
+  risk_tier_label?: string | null;
   approval_tier?: string | null;
   approval_status?: string | null;
+  workflow_stage?: string | null;
+  workflow_stage_label?: string | null;
+  workflow_progress_percentage?: number | null;
 }
 
 export interface VendorStatus {
@@ -26,6 +31,26 @@ export interface VendorStatus {
   current_agent?: string;
   current_step?: string;
   progress_percentage?: number;
+  workflow_stage?: string | null;
+  workflow_stage_label?: string | null;
+  workflow_progress_percentage?: number | null;
+  workflow_stages?: Array<{
+    key: string;
+    label: string;
+    description?: string;
+    status?: string;
+    progress?: number;
+    notes?: string[];
+  }>;
+  risk_tier?: string | null;
+  risk_tier_label?: string | null;
+  risk_tier_rationale?: string | null;
+  required_documents?: Array<Record<string, unknown>>;
+  missing_required_documents?: Array<Record<string, unknown>>;
+  required_legal_documents?: Array<Record<string, unknown>>;
+  missing_legal_documents?: Array<Record<string, unknown>>;
+  approval_departments?: Array<Record<string, unknown>>;
+  operational_tasks?: Record<string, unknown>;
   errors?: string[];
   agent_errors?: Array<{
     agent?: string;
@@ -175,6 +200,7 @@ export interface VendorReport {
     duration_ms?: number;
     timestamp?: string;
   }>;
+  business_workflow?: Record<string, unknown>;
 }
 
 export interface DocumentListResponse {

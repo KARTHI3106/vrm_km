@@ -14,6 +14,10 @@ from typing import Any
 from langchain_core.tools import tool
 
 from app.config import get_settings
+from app.core.business_workflow import (
+    approval_departments_for_tier,
+    build_post_approval_operations,
+)
 from app.core.db import (
     create_approval_decision,
     create_approval_request as db_create_approval,
@@ -127,12 +131,18 @@ def _send_email(recipient_email: str, subject: str, body: str) -> tuple[str, str
 def _workflow_for_tier(risk_tier: str) -> dict[str, Any]:
     workflow = get_approval_workflow_by_tier(risk_tier)
     if workflow:
-        return workflow
+        return {
+            **workflow,
+            "name": workflow.get("name") or f"Multi-Department Approval ({risk_tier})",
+            "approvers": approval_departments_for_tier(risk_tier),
+            "approval_order": "parallel",
+            "timeout_hours": workflow.get("timeout_hours", 72),
+        }
     return {
         "id": None,
-        "name": f"Fallback {risk_tier}",
+        "name": f"Multi-Department Approval ({risk_tier})",
         "risk_tier": risk_tier,
-        "approvers": [],
+        "approvers": approval_departments_for_tier(risk_tier),
         "approval_order": "parallel",
         "timeout_hours": 72,
     }
@@ -474,6 +484,80 @@ def finalize_vendor_status_data(vendor_id: str, final_decision: str, conditions:
     }
 
 
+def _record_post_approval_operations(vendor_id: str, final_decision: str) -> dict[str, Any]:
+    if final_decision not in {"approved", "conditional_approval"}:
+        return {}
+
+    vendor = get_vendor(vendor_id) or {}
+    existing_ops = (
+        (vendor.get("metadata") or {})
+        .get("business_workflow", {})
+        .get("operations", {})
+        if isinstance(vendor.get("metadata"), dict)
+        else {}
+    )
+    if (
+        existing_ops.get("erp_setup", {}).get("status") == "completed"
+        and existing_ops.get("activation", {}).get("status") == "completed"
+        and existing_ops.get("annual_soc2_renewal", {}).get("status") == "scheduled"
+    ):
+        return vendor.get("metadata", {}) if isinstance(vendor.get("metadata"), dict) else {}
+
+    metadata_update = build_post_approval_operations(vendor)
+    updated_vendor = update_vendor(vendor_id, {"metadata": metadata_update})
+    approval_time = datetime.now(timezone.utc)
+    effective_date = approval_time.date().isoformat()
+
+    create_vendor_status_history(
+        {
+            "vendor_id": vendor_id,
+            "old_status": final_decision,
+            "new_status": "erp_setup",
+            "changed_by": "approval_orchestrator",
+            "reason": "ERP setup completed after approval.",
+            "conditions": [],
+            "effective_date": effective_date,
+        }
+    )
+    create_vendor_status_history(
+        {
+            "vendor_id": vendor_id,
+            "old_status": "erp_setup",
+            "new_status": "activation",
+            "changed_by": "approval_orchestrator",
+            "reason": "Vendor activated after ERP setup.",
+            "conditions": [],
+            "effective_date": effective_date,
+        }
+    )
+    create_vendor_status_history(
+        {
+            "vendor_id": vendor_id,
+            "old_status": "activation",
+            "new_status": "annual_soc2_renewal",
+            "changed_by": "approval_orchestrator",
+            "reason": "Annual SOC2 renewal scheduled after activation.",
+            "conditions": [],
+            "effective_date": effective_date,
+        }
+    )
+
+    create_audit_log(
+        vendor_id=vendor_id,
+        agent_name="approval_orchestrator",
+        action="post_approval_operations_completed",
+        output_data={
+            "erp_setup": "completed",
+            "activation": "completed",
+            "annual_soc2_renewal": updated_vendor.get("metadata", {})
+            .get("business_workflow", {})
+            .get("operations", {})
+            .get("annual_soc2_renewal", {}),
+        },
+    )
+    return updated_vendor.get("metadata", {})
+
+
 def generate_audit_trail_data(vendor_id: str) -> dict[str, Any]:
     vendor = get_vendor(vendor_id) or {}
     logs = get_audit_logs(vendor_id)
@@ -619,6 +703,7 @@ def sync_approval_completion(vendor_id: str) -> dict[str, Any]:
     approval = get_approval_request(vendor_id)
     if approval and approval.get("status") in {"approved", "rejected", "conditional"}:
         final_outcome = "conditional_approval" if approval.get("status") == "conditional" else approval.get("status")
+        _record_post_approval_operations(vendor_id, final_outcome)
         return {
             "vendor_id": vendor_id,
             "approval_id": approval.get("id"),
@@ -635,6 +720,7 @@ def sync_approval_completion(vendor_id: str) -> dict[str, Any]:
     final_decision = completion["final_outcome"]
     conditions = completion.get("all_conditions", [])
     finalize_vendor_status_data(vendor_id, final_decision, conditions)
+    _record_post_approval_operations(vendor_id, final_decision)
     send_vendor_notification_data(vendor_id, final_decision, conditions)
     return {
         **completion,
@@ -668,7 +754,7 @@ def orchestrate_approval_setup(vendor_id: str) -> dict[str, Any]:
             approval_tier=approval_tier,
         )
 
-    if approval_tier == "auto_approve" or not workflow.get("approvers"):
+    if not workflow.get("approvers"):
         sync_approval_completion(vendor_id)
 
     return {

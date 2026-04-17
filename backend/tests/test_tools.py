@@ -17,24 +17,32 @@ class TestParsePdf:
     def test_parse_valid_pdf(self):
         """Test parsing a valid PDF file."""
         # Create a minimal PDF for testing
+        import tempfile
         from app.tools.intake_tools import parse_pdf
 
         # We can't easily create a real PDF in tests, so we test with a mock
-        with patch("pdfplumber.open") as mock_open:
-            mock_pdf = MagicMock()
-            mock_page = MagicMock()
-            mock_page.extract_text.return_value = "Sample PDF content"
-            mock_page.extract_tables.return_value = []
-            mock_pdf.pages = [mock_page]
-            mock_pdf.metadata = {"Author": "Test"}
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_pdf)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_file:
+            tmp_file.write(b"%PDF-1.4\n%mock\n")
+            tmp_path = tmp_file.name
 
-            result = parse_pdf.invoke({"file_path": "test.pdf"})
-            data = json.loads(result)
-            assert data["status"] == "success"
-            assert data["num_pages"] == 1
-            assert "Sample PDF content" in data["text"]
+        try:
+            with patch("app.tools.intake_tools.validate_file", return_value=None), patch("pdfplumber.open") as mock_open:
+                mock_pdf = MagicMock()
+                mock_page = MagicMock()
+                mock_page.extract_text.return_value = "Sample PDF content"
+                mock_page.extract_tables.return_value = []
+                mock_pdf.pages = [mock_page]
+                mock_pdf.metadata = {"Author": "Test"}
+                mock_open.return_value.__enter__ = MagicMock(return_value=mock_pdf)
+                mock_open.return_value.__exit__ = MagicMock(return_value=False)
+
+                result = parse_pdf.invoke({"file_path": tmp_path})
+                data = json.loads(result)
+                assert data["status"] == "success"
+                assert data["num_pages"] == 1
+                assert "Sample PDF content" in data["text"]
+        finally:
+            os.remove(tmp_path)
 
     def test_parse_nonexistent_pdf(self):
         """Test parsing a non-existent PDF file."""

@@ -52,7 +52,7 @@ export function VendorsPage() {
         <div>
           <h1 className="page__title">Vendors</h1>
           <p className="page__subtitle">
-            Review queue aligned to the active workflow, evidence, risk, and approval stages.
+            Vendor queue aligned to the exact onboarding workflow from request through approval, ERP setup, and activation.
           </p>
         </div>
         <div className="metrics-grid">
@@ -70,8 +70,8 @@ export function VendorsPage() {
       <section className="queue-panel">
         <div className="queue-panel__header">
           <div>
-            <p className="page__kicker">Mapped from Stitch</p>
-            <h2 className="section-title">Condensed Compliance Flow</h2>
+            <p className="page__kicker">Judge Workflow</p>
+            <h2 className="section-title">Exact Vendor Onboarding Flow</h2>
           </div>
           <Link className="button" to="/intake">
             New Assessment
@@ -81,10 +81,11 @@ export function VendorsPage() {
         <div className="table">
           <div className="table__header">
             <div>Vendor Entity</div>
-            <div>Stage</div>
-            <div>Risk</div>
-            <div>Approval</div>
-            <div>Contract</div>
+              <div>Stage</div>
+              <div>Risk Tier</div>
+              <div>Risk</div>
+              <div>Approval</div>
+              <div>Contract</div>
           </div>
 
           {filteredVendors.map((vendor) => {
@@ -102,6 +103,7 @@ export function VendorsPage() {
                   </div>
                 </div>
                 <StatusBadge tone="muted">{stage?.label || "Review"}</StatusBadge>
+                <StatusBadge tone="info">{vendor.risk_tier_label || "Tier Pending"}</StatusBadge>
                 <StatusBadge tone={toneForRisk(vendor.risk_level)}>
                   {vendor.risk_level || "Pending"}
                 </StatusBadge>

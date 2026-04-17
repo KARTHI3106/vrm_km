@@ -37,6 +37,13 @@ from app.core.db import (
 )
 from app.core.redis_state import save_state, load_state, cache_get, cache_set
 from app.core.events import publish_event
+from app.core.agent_trace import (
+    trace_agent_complete,
+    trace_agent_decision,
+    trace_agent_error,
+    trace_agent_start,
+    trace_agent_thinking,
+)
 from app.tools.security_tools import SECURITY_TOOLS, calculate_security_score_data
 
 logger = logging.getLogger(__name__)
@@ -103,6 +110,167 @@ def create_security_agent():
     return agent
 
 
+def _component_score(score_data: dict[str, Any], key: str) -> float:
+    breakdown = (score_data or {}).get("breakdown", {}) or {}
+    value = breakdown.get(key, 0)
+    if isinstance(value, dict):
+        value = value.get("score", 0)
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _build_security_details(tool_outputs: dict[str, Any], data_warnings: list[str]) -> dict[str, Any]:
+    findings: list[dict[str, Any]] = []
+    recommendations: list[dict[str, Any]] = []
+    critical_issues: list[dict[str, Any]] = []
+
+    soc2 = tool_outputs.get("soc2_validation", {})
+    if soc2:
+        valid_soc2 = bool(soc2.get("is_valid_format")) or soc2.get("report_type") in {"Type 1", "Type 2"}
+        findings.append(
+            {
+                "title": "SOC 2 assurance",
+                "severity": "info" if valid_soc2 else "high",
+                "description": (
+                    f"SOC 2 {soc2.get('report_type', 'report')} from {soc2.get('auditor_name', 'unknown auditor')}."
+                    if valid_soc2
+                    else "SOC 2 evidence was missing or could not be validated."
+                ),
+            }
+        )
+        if not valid_soc2:
+            recommendations.append(
+                {
+                    "title": "Provide valid SOC 2 assurance",
+                    "description": "Submit a current SOC 2 report or equivalent third-party assurance artifact.",
+                }
+            )
+
+    iso = tool_outputs.get("iso27001_validation", {})
+    if iso:
+        valid_iso = bool(iso.get("is_valid_format"))
+        findings.append(
+            {
+                "title": "ISO 27001 certificate",
+                "severity": "info" if valid_iso else "medium",
+                "description": (
+                    f"ISO 27001 certificate issued by {iso.get('certification_body', 'unknown certification body')}."
+                    if valid_iso
+                    else "ISO 27001 certificate could not be validated."
+                ),
+            }
+        )
+
+    expiry = tool_outputs.get("certificate_expiry", {})
+    if expiry:
+        findings.append(
+            {
+                "title": "Certificate lifecycle",
+                "severity": expiry.get("severity", "info"),
+                "description": expiry.get("recommendation", "Certificate expiry state reviewed."),
+            }
+        )
+        if expiry.get("expiry_status") == "expired":
+            critical_issues.append(
+                {
+                    "title": "Expired security certificate",
+                    "severity": "critical",
+                    "description": "Independent security assurance has expired.",
+                }
+            )
+
+    domain_scan = tool_outputs.get("domain_scan", {})
+    if domain_scan:
+        findings.append(
+            {
+                "title": "External domain posture",
+                "severity": "info" if domain_scan.get("score", 0) >= 70 else "medium",
+                "description": (
+                    f"Domain scan score {domain_scan.get('score', 0)}/100 with grade {domain_scan.get('grade', 'N/A')}."
+                ),
+            }
+        )
+        if domain_scan.get("ssl", {}).get("valid") is False:
+            critical_issues.append(
+                {
+                    "title": "SSL/TLS validation failed",
+                    "severity": "critical",
+                    "description": "The external domain scan could not validate the vendor TLS posture.",
+                }
+            )
+            recommendations.append(
+                {
+                    "title": "Repair external TLS posture",
+                    "description": "Fix certificate or handshake issues and provide evidence of remediation.",
+                }
+            )
+
+    breach = tool_outputs.get("breach_history", {})
+    if breach:
+        breach_count = int(breach.get("total_breaches_found", 0) or 0)
+        findings.append(
+            {
+                "title": "Breach history",
+                "severity": "high" if breach_count else "info",
+                "description": (
+                    "No material breach history detected."
+                    if breach_count == 0
+                    else f"{breach_count} historical breach event(s) were detected."
+                ),
+            }
+        )
+        if breach_count:
+            recommendations.append(
+                {
+                    "title": "Provide breach remediation narrative",
+                    "description": "Document root cause, remediation status, and post-incident control improvements.",
+                }
+            )
+
+    questionnaire = tool_outputs.get("questionnaire_analysis", {})
+    if questionnaire:
+        findings.append(
+            {
+                "title": "Security questionnaire",
+                "severity": "info" if questionnaire.get("overall_score", 0) >= 70 else "medium",
+                "description": f"Questionnaire score {questionnaire.get('overall_score', 0)}/100.",
+            }
+        )
+        for recommendation in questionnaire.get("recommendations", [])[:3]:
+            recommendations.append(
+                {
+                    "title": "Questionnaire follow-up",
+                    "description": str(recommendation),
+                }
+            )
+
+    for warning in data_warnings:
+        findings.append(
+            {
+                "title": "Evidence gap",
+                "severity": "medium",
+                "description": warning,
+            }
+        )
+
+    deduped_recommendations: list[dict[str, Any]] = []
+    seen_recommendations: set[str] = set()
+    for item in recommendations:
+        key = f"{item.get('title')}|{item.get('description')}"
+        if key in seen_recommendations:
+            continue
+        seen_recommendations.add(key)
+        deduped_recommendations.append(item)
+
+    return {
+        "findings": findings,
+        "recommendations": deduped_recommendations,
+        "critical_issues": critical_issues,
+    }
+
+
 def run_security_agent(vendor_id: str) -> dict:
     """Run the Security Review Agent for a vendor.
 
@@ -129,6 +297,16 @@ def run_security_agent(vendor_id: str) -> dict:
                 "error": f"Vendor {vendor_id} not found",
             }
 
+        trace_id = trace_agent_start(
+            vendor_id,
+            "security_review",
+            {
+                "vendor_name": vendor.get("name"),
+                "vendor_type": vendor.get("vendor_type"),
+                "domain": vendor.get("domain"),
+            },
+        )
+
         review = create_security_review(
             {
                 "vendor_id": vendor_id,
@@ -153,6 +331,12 @@ def run_security_agent(vendor_id: str) -> dict:
         publish_event(vendor_id, "tool_status", {
             "phase": "security_review", "tool_name": "agent_start", "status": "calling"
         })
+        trace_agent_thinking(
+            vendor_id,
+            "security_review",
+            "Assessing submitted security evidence, external attack surface, and breach signals before deterministic scoring.",
+            trace_id=trace_id,
+        )
 
         save_state(vendor_id, {"current_step": "security_validating_context", "progress_percentage": 22})
 
@@ -249,10 +433,27 @@ Vendor name for the report: {vendor.get('name', 'Unknown')}
         # ── Deterministic scoring (Hybrid Pattern) ──────────────────
         tool_outputs = _extract_tool_outputs(final_messages)
         score_data = calculate_security_score_data(tool_outputs)
+        detail_data = _build_security_details(tool_outputs, data_warnings)
 
         overall_score = score_data["overall_score"]
         grade = score_data["grade"]
         completed_at = datetime.now(timezone.utc).isoformat()
+        report_payload = {
+            "summary": (
+                f"Security review completed with {overall_score}/100 ({grade}). "
+                f"{len(detail_data['critical_issues'])} critical issue(s), "
+                f"{len(detail_data['recommendations'])} recommendation(s)."
+            ),
+            "agent_output": final_response[:5000],
+            "data_warnings": data_warnings,
+        }
+        db_write_summary = {
+            "review_id": review_id,
+            "overall_score": overall_score,
+            "grade": grade,
+            "findings": len(detail_data["findings"]),
+            "critical_issues": len(detail_data["critical_issues"]),
+        }
 
         # Update the security review record with deterministic score
         if review_id:
@@ -260,7 +461,14 @@ Vendor name for the report: {vendor.get('name', 'Unknown')}
                 "status": "completed",
                 "overall_score": overall_score,
                 "grade": grade,
-                "report": {"agent_output": final_response[:5000]},
+                "certificate_score": _component_score(score_data, "certificates"),
+                "domain_security_score": _component_score(score_data, "domain_security"),
+                "breach_history_score": _component_score(score_data, "breach_history"),
+                "questionnaire_score": _component_score(score_data, "questionnaire"),
+                "findings": detail_data["findings"],
+                "critical_issues": detail_data["critical_issues"],
+                "recommendations": detail_data["recommendations"],
+                "report": report_payload,
                 "completed_at": completed_at,
             })
 
@@ -284,27 +492,46 @@ Vendor name for the report: {vendor.get('name', 'Unknown')}
         publish_event(vendor_id, "tool_status", {
             "phase": "security_review", "tool_name": "agent_end", "status": "complete"
         })
+        trace_agent_decision(
+            vendor_id,
+            "security_review",
+            "Deterministic security score persisted from structured tool outputs.",
+            db_write_summary,
+            trace_id=trace_id,
+        )
 
         logger.info(
             f"Security agent completed for vendor {vendor_id}: "
             f"score={overall_score}, grade={grade}"
         )
 
-        return {
+        result = {
             "status": "success",
             "vendor_id": vendor_id,
             "overall_score": overall_score,
             "grade": grade,
             "score_breakdown": score_data["breakdown"],
             "critical_flags": score_data.get("critical_flags", []),
+            "findings": detail_data["findings"],
+            "critical_issues": detail_data["critical_issues"],
+            "recommendations": detail_data["recommendations"],
             "risk_level": score_data["risk_level"],
             "agent_response": final_response[:3000],
             "data_warnings": data_warnings,
+            "db_write_summary": db_write_summary,
         }
+        trace_agent_complete(vendor_id, "security_review", result, trace_id=trace_id)
+        return result
 
     except Exception as e:
         logger.error(
             f"Security agent failed for vendor {vendor_id}: {e}"
+        )
+        trace_agent_error(
+            vendor_id,
+            "security_review",
+            str(e),
+            error_type=type(e).__name__,
         )
         if review_id:
             update_security_review(

@@ -104,13 +104,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS + Security
+# Middleware order: last added = outermost (runs first on request, last on response).
+# CORS must be outermost so OPTIONS preflight is handled before any other middleware rejects it.
 app.add_middleware(InputValidationMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

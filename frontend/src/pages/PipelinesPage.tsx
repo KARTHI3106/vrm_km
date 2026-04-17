@@ -76,7 +76,7 @@ export function PipelinesPage() {
         <div>
           <h1 className="page__title">Pipeline</h1>
           <p className="page__subtitle">
-            Real-time synchronization of vendor compliance and risk mitigation across five strategic gates.
+            Exact vendor onboarding workflow from internal request through activation and annual SOC2 renewal.
           </p>
         </div>
         <div className="stats-row">
@@ -92,7 +92,7 @@ export function PipelinesPage() {
       </section>
 
       <section className="pipeline-grid">
-        {PIPELINE_STAGES.map((stage) => (
+        {PIPELINE_STAGES.map((stage, index) => (
           <button
             className={`pipeline-card ${stageFilter === stage.key ? "pipeline-card--active" : ""}`}
             key={stage.key}
@@ -107,9 +107,7 @@ export function PipelinesPage() {
             }}
             type="button"
           >
-            <div className="pipeline-card__icon">
-              {stage.key === "intake" ? "01" : stage.key === "review" ? "02" : stage.key === "evidence" ? "03" : stage.key === "risk" ? "04" : "05"}
-            </div>
+            <div className="pipeline-card__icon">{String(index + 1).padStart(2, "0")}</div>
             <div className="pipeline-card__value">{stageCounts[stage.key]}</div>
             <h2 className="pipeline-card__title">{stage.label}</h2>
             <div className="button-row">

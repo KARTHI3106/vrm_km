@@ -1,22 +1,20 @@
 """
 JWT-based authentication and role-based access control (RBAC).
 """
+import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from app.config import get_settings
 from app.core.db import get_user_by_email, get_user_by_id
 
 logger = logging.getLogger(__name__)
-
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Bearer token scheme
 security = HTTPBearer(auto_error=False)
@@ -36,12 +34,33 @@ ROLE_HIERARCHY = {
 
 def hash_password(password: str) -> str:
     """Hash a plaintext password."""
-    return pwd_context.hash(password)
+    password_bytes = _password_bytes(password)
+    return bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     """Verify a plaintext password against a hash."""
-    return pwd_context.verify(plain, hashed)
+    if not hashed:
+        return False
+
+    try:
+        return bcrypt.checkpw(_password_bytes(plain), hashed.encode("utf-8"))
+    except ValueError:
+        logger.warning("Invalid password hash format during verification")
+        return False
+
+
+def _password_bytes(password: str) -> bytes:
+    """
+    Normalize passwords before bcrypt.
+
+    bcrypt only accepts up to 72 bytes. Pre-hashing long inputs keeps
+    hashing deterministic without exposing the raw oversized secret.
+    """
+    raw = password.encode("utf-8")
+    if len(raw) <= 72:
+        return raw
+    return hashlib.sha256(raw).hexdigest().encode("ascii")
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

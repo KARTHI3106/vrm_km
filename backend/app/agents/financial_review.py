@@ -35,6 +35,13 @@ from app.core.db import (
     get_documents_for_vendor,
     update_financial_review,
 )
+from app.core.agent_trace import (
+    trace_agent_complete,
+    trace_agent_decision,
+    trace_agent_error,
+    trace_agent_start,
+    trace_agent_thinking,
+)
 from app.core.redis_state import save_state, load_state
 from app.core.events import publish_event
 from app.tools.financial_tools import FINANCIAL_TOOLS, calculate_financial_risk_score_data
@@ -102,6 +109,125 @@ def _extract_tool_outputs(messages: list) -> dict[str, Any]:
     return outputs
 
 
+def _component_score(score_data: dict[str, Any], key: str) -> float:
+    breakdown = (score_data or {}).get("breakdown", {}) or {}
+    value = breakdown.get(key, 0)
+    if isinstance(value, dict):
+        value = value.get("score", 0)
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _build_financial_details(tool_outputs: dict[str, Any], data_warnings: list[str]) -> dict[str, Any]:
+    findings: list[dict[str, Any]] = []
+    recommendations: list[dict[str, Any]] = []
+
+    insurance = tool_outputs.get("insurance_verification", {})
+    if insurance:
+        findings.append(
+            {
+                "title": "Insurance coverage",
+                "severity": "info" if insurance.get("overall_adequate") else "high",
+                "description": f"Insurance adequacy score {insurance.get('adequacy_score', 0)}/100.",
+            }
+        )
+        for gap in insurance.get("gaps", [])[:5]:
+            recommendations.append(
+                {
+                    "title": "Insurance coverage gap",
+                    "description": str(gap),
+                }
+            )
+
+    credit = tool_outputs.get("credit_rating", {})
+    if credit:
+        findings.append(
+            {
+                "title": "Credit rating",
+                "severity": "high" if str(credit.get("risk_level", "")).lower() == "high" else "info",
+                "description": (
+                    f"Credit rating {credit.get('credit_rating', 'N/A')} from {credit.get('source', 'configured source')}."
+                ),
+            }
+        )
+
+    financials = tool_outputs.get("financial_statements", {})
+    if financials:
+        findings.append(
+            {
+                "title": "Financial statements",
+                "severity": "info" if financials.get("stability_score", 0) >= 70 else "medium",
+                "description": f"Financial stability score {financials.get('stability_score', 0)}/100.",
+            }
+        )
+        for recommendation in financials.get("recommendations", [])[:3]:
+            recommendations.append(
+                {
+                    "title": "Financial remediation",
+                    "description": str(recommendation),
+                }
+            )
+
+    bankruptcy = tool_outputs.get("bankruptcy_check", {})
+    if bankruptcy:
+        findings.append(
+            {
+                "title": "Bankruptcy screening",
+                "severity": "critical" if bankruptcy.get("bankruptcy_found") else "info",
+                "description": (
+                    "No bankruptcy records detected."
+                    if not bankruptcy.get("bankruptcy_found")
+                    else "Historical or active bankruptcy signal detected."
+                ),
+            }
+        )
+
+    bcp = tool_outputs.get("bcp_verification", {})
+    if bcp:
+        findings.append(
+            {
+                "title": "Business continuity plan",
+                "severity": "info" if bcp.get("completeness_score", 0) >= 70 else "medium",
+                "description": f"BCP completeness {bcp.get('completeness_score', 0)}/100.",
+            }
+        )
+        for recommendation in bcp.get("recommendations", [])[:3]:
+            recommendations.append(
+                {
+                    "title": "Continuity remediation",
+                    "description": str(recommendation),
+                }
+            )
+
+    for warning in data_warnings:
+        findings.append(
+            {
+                "title": "Evidence gap",
+                "severity": "medium",
+                "description": warning,
+            }
+        )
+
+    deduped_recommendations: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in recommendations:
+        key = f"{item.get('title')}|{item.get('description')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_recommendations.append(item)
+
+    return {
+        "findings": findings,
+        "recommendations": deduped_recommendations,
+        "insurance_details": insurance,
+        "credit_details": credit,
+        "financial_analysis": financials,
+    }
+
+
 def run_financial_agent(vendor_id: str) -> dict:
     """Execute the financial review for a vendor.
 
@@ -123,6 +249,16 @@ def run_financial_agent(vendor_id: str) -> dict:
                 "vendor_id": vendor_id,
                 "error": f"Vendor {vendor_id} not found",
             }
+
+        trace_id = trace_agent_start(
+            vendor_id,
+            "financial_review",
+            {
+                "vendor_name": vendor.get("name"),
+                "vendor_type": vendor.get("vendor_type"),
+                "contract_value": vendor.get("contract_value"),
+            },
+        )
 
         review = create_financial_review(
             {
@@ -147,6 +283,12 @@ def run_financial_agent(vendor_id: str) -> dict:
         publish_event(vendor_id, "tool_status", {
             "phase": "financial_review", "tool_name": "agent_start", "status": "calling"
         })
+        trace_agent_thinking(
+            vendor_id,
+            "financial_review",
+            "Assessing insurance, credit signals, financial stability, and business continuity before deterministic scoring.",
+            trace_id=trace_id,
+        )
 
         save_state(vendor_id, {"current_step": "financial_validating_context", "progress_percentage": 24})
 
@@ -208,18 +350,42 @@ Where financial documents are missing, flag the gap clearly."""
         # ── Deterministic scoring (Hybrid Pattern) ──────────────────
         tool_outputs = _extract_tool_outputs(messages)
         score_data = calculate_financial_risk_score_data(tool_outputs)
+        detail_data = _build_financial_details(tool_outputs, data_warnings)
 
         score = score_data["overall_score"]
         grade = score_data["grade"]
         completed_at = datetime.now(timezone.utc).isoformat()
+        report_payload = {
+            "summary": (
+                f"Financial review completed with {score}/100 ({grade}). "
+                f"{len(detail_data['findings'])} finding(s) and {len(detail_data['recommendations'])} recommendation(s)."
+            ),
+            "agent_output": final_msg[:5000],
+            "data_warnings": data_warnings,
+        }
+        db_write_summary = {
+            "review_id": review_id,
+            "overall_score": score,
+            "grade": grade,
+            "finding_count": len(detail_data["findings"]),
+        }
 
         # Update the financial review record
         if review_id:
             update_financial_review(review_id, {
                 "overall_score": score,
                 "grade": grade,
+                "insurance_score": _component_score(score_data, "insurance"),
+                "credit_rating_score": _component_score(score_data, "credit_rating"),
+                "financial_stability_score": _component_score(score_data, "financial_stability"),
+                "bcp_score": _component_score(score_data, "bcp"),
+                "insurance_details": detail_data["insurance_details"],
+                "credit_details": detail_data["credit_details"],
+                "financial_analysis": detail_data["financial_analysis"],
+                "findings": detail_data["findings"],
+                "recommendations": detail_data["recommendations"],
                 "status": "completed",
-                "report": {"agent_output": final_msg[:5000]},
+                "report": report_payload,
                 "completed_at": completed_at,
             })
 
@@ -242,20 +408,42 @@ Where financial documents are missing, flag the gap clearly."""
             "phase": "financial_review", "tool_name": "agent_end", "status": "complete"
         })
 
-        return {
+        trace_agent_decision(
+            vendor_id,
+            "financial_review",
+            "Financial score and supporting findings persisted from structured tool outputs.",
+            db_write_summary,
+            trace_id=trace_id,
+        )
+
+        result_payload = {
             "status": "success",
             "overall_score": score,
             "score": score,
             "grade": grade,
             "score_breakdown": score_data["breakdown"],
             "critical_flags": score_data.get("critical_flags", []),
+            "findings": detail_data["findings"],
+            "recommendations": detail_data["recommendations"],
+            "insurance_details": detail_data["insurance_details"],
+            "credit_details": detail_data["credit_details"],
+            "financial_analysis": detail_data["financial_analysis"],
             "risk_level": score_data["risk_level"],
             "agent_output": final_msg[:3000],
             "data_warnings": data_warnings,
+            "db_write_summary": db_write_summary,
         }
+        trace_agent_complete(vendor_id, "financial_review", result_payload, trace_id=trace_id)
+        return result_payload
 
     except Exception as e:
         logger.error(f"Financial agent failed for vendor {vendor_id}: {e}")
+        trace_agent_error(
+            vendor_id,
+            "financial_review",
+            str(e),
+            error_type=type(e).__name__,
+        )
         if review_id:
             update_financial_review(
                 review_id,

@@ -35,6 +35,13 @@ from app.core.db import (
     get_documents_for_vendor,
     update_compliance_review,
 )
+from app.core.agent_trace import (
+    trace_agent_complete,
+    trace_agent_decision,
+    trace_agent_error,
+    trace_agent_start,
+    trace_agent_thinking,
+)
 from app.core.redis_state import save_state, load_state
 from app.core.events import publish_event
 from app.tools.compliance_tools import COMPLIANCE_TOOLS, calculate_compliance_score_data
@@ -102,6 +109,175 @@ def _extract_tool_outputs(messages: list) -> dict[str, Any]:
     return outputs
 
 
+def _component_score(score_data: dict[str, Any], key: str) -> float:
+    breakdown = (score_data or {}).get("breakdown", {}) or {}
+    value = breakdown.get(key, 0)
+    if isinstance(value, dict):
+        value = value.get("score", 0)
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _build_compliance_details(tool_outputs: dict[str, Any], data_warnings: list[str]) -> dict[str, Any]:
+    findings: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    recommendations: list[dict[str, Any]] = []
+    applicable_regulations: list[str] = []
+
+    gdpr = tool_outputs.get("gdpr_check", {})
+    if gdpr:
+        applicable_regulations.append("GDPR")
+        findings.append(
+            {
+                "title": "GDPR review",
+                "severity": "info" if gdpr.get("score", 0) >= 70 else "high",
+                "description": f"GDPR score {gdpr.get('score', 0)}/100.",
+            }
+        )
+        for gap in gdpr.get("gaps", [])[:5]:
+            gaps.append(
+                {
+                    "requirement": "GDPR",
+                    "severity": "high",
+                    "criticality": "required",
+                    "description": str(gap),
+                    "document_type": "data_processing_agreement",
+                }
+            )
+        for recommendation in gdpr.get("recommendations", [])[:3]:
+            recommendations.append(
+                {
+                    "title": "GDPR remediation",
+                    "description": str(recommendation),
+                }
+            )
+
+    hipaa = tool_outputs.get("hipaa_check", {})
+    if hipaa and hipaa.get("overall_compliance") != "not_applicable":
+        applicable_regulations.append("HIPAA")
+        findings.append(
+            {
+                "title": "HIPAA review",
+                "severity": "info" if hipaa.get("score", 0) >= 70 else "high",
+                "description": f"HIPAA score {hipaa.get('score', 0)}/100.",
+            }
+        )
+        for gap in hipaa.get("gaps", [])[:5]:
+            gaps.append(
+                {
+                    "requirement": "HIPAA",
+                    "severity": "high",
+                    "criticality": "required",
+                    "description": str(gap),
+                    "document_type": "baa",
+                }
+            )
+
+    pci = tool_outputs.get("pci_check", {})
+    if pci and pci.get("overall_compliance") != "not_applicable":
+        applicable_regulations.append("PCI-DSS")
+        findings.append(
+            {
+                "title": "PCI-DSS review",
+                "severity": "info" if pci.get("score", 0) >= 70 else "high",
+                "description": f"PCI-DSS score {pci.get('score', 0)}/100.",
+            }
+        )
+        for gap in pci.get("gaps", [])[:5]:
+            gaps.append(
+                {
+                    "requirement": "PCI-DSS",
+                    "severity": "high",
+                    "criticality": "required",
+                    "description": str(gap),
+                    "document_type": "pci_aoc",
+                }
+            )
+
+    dpa = tool_outputs.get("dpa_verification", {})
+    if dpa:
+        findings.append(
+            {
+                "title": "Data Processing Agreement",
+                "severity": "info" if dpa.get("is_valid_dpa") else "high",
+                "description": f"DPA completeness {dpa.get('completeness_score', 0)}/100.",
+            }
+        )
+        for clause in dpa.get("clauses_missing", [])[:5]:
+            gaps.append(
+                {
+                    "requirement": "DPA clause",
+                    "severity": "high",
+                    "criticality": "required",
+                    "description": f"Missing DPA clause: {clause}",
+                    "document_type": "data_processing_agreement",
+                }
+            )
+        for recommendation in dpa.get("recommendations", [])[:3]:
+            recommendations.append(
+                {
+                    "title": "DPA remediation",
+                    "description": str(recommendation),
+                }
+            )
+
+    privacy = tool_outputs.get("privacy_policy", {})
+    if privacy:
+        findings.append(
+            {
+                "title": "Privacy policy",
+                "severity": "info" if privacy.get("completeness_score", 0) >= 70 else "medium",
+                "description": f"Privacy policy completeness {privacy.get('completeness_score', 0)}/100.",
+            }
+        )
+        for issue in privacy.get("issues", [])[:5]:
+            gaps.append(
+                {
+                    "requirement": "Privacy policy",
+                    "severity": "medium",
+                    "criticality": "recommended",
+                    "description": str(issue),
+                    "document_type": "privacy_policy",
+                }
+            )
+        for recommendation in privacy.get("recommendations", [])[:3]:
+            recommendations.append(
+                {
+                    "title": "Privacy disclosure improvement",
+                    "description": str(recommendation),
+                }
+            )
+
+    for warning in data_warnings:
+        gaps.append(
+            {
+                "requirement": "Submitted evidence",
+                "severity": "medium",
+                "criticality": "required",
+                "description": warning,
+                "document_type": "supporting_document",
+            }
+        )
+
+    deduped_recommendations: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in recommendations:
+        key = f"{item.get('title')}|{item.get('description')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_recommendations.append(item)
+
+    return {
+        "findings": findings,
+        "gaps": gaps,
+        "recommendations": deduped_recommendations,
+        "applicable_regulations": list(dict.fromkeys(applicable_regulations)),
+    }
+
+
 def run_compliance_agent(vendor_id: str) -> dict:
     """Execute the compliance review for a vendor.
 
@@ -123,6 +299,16 @@ def run_compliance_agent(vendor_id: str) -> dict:
                 "vendor_id": vendor_id,
                 "error": f"Vendor {vendor_id} not found",
             }
+
+        trace_id = trace_agent_start(
+            vendor_id,
+            "compliance_review",
+            {
+                "vendor_name": vendor.get("name"),
+                "vendor_type": vendor.get("vendor_type"),
+                "domain": vendor.get("domain"),
+            },
+        )
 
         review = create_compliance_review(
             {
@@ -147,6 +333,12 @@ def run_compliance_agent(vendor_id: str) -> dict:
         publish_event(vendor_id, "tool_status", {
             "phase": "compliance_review", "tool_name": "agent_start", "status": "calling"
         })
+        trace_agent_thinking(
+            vendor_id,
+            "compliance_review",
+            "Assessing regulatory obligations, agreement completeness, and disclosures before deterministic scoring.",
+            trace_id=trace_id,
+        )
 
         save_state(vendor_id, {"current_step": "compliance_validating_context", "progress_percentage": 23})
 
@@ -212,18 +404,43 @@ Where document text is missing, flag the gap clearly."""
         # ── Deterministic scoring (Hybrid Pattern) ──────────────────
         tool_outputs = _extract_tool_outputs(messages)
         score_data = calculate_compliance_score_data(tool_outputs)
+        detail_data = _build_compliance_details(tool_outputs, data_warnings)
 
         score = score_data["overall_score"]
         grade = score_data["grade"]
         completed_at = datetime.now(timezone.utc).isoformat()
+        report_payload = {
+            "summary": (
+                f"Compliance review completed with {score}/100 ({grade}). "
+                f"{len(detail_data['gaps'])} gap(s) and {len(detail_data['recommendations'])} recommendation(s)."
+            ),
+            "agent_output": final_msg[:5000],
+            "data_warnings": data_warnings,
+        }
+        db_write_summary = {
+            "review_id": review_id,
+            "overall_score": score,
+            "grade": grade,
+            "gap_count": len(detail_data["gaps"]),
+            "regulations": detail_data["applicable_regulations"],
+        }
 
         # Update the compliance review record
         if review_id:
             update_compliance_review(review_id, {
                 "overall_score": score,
                 "grade": grade,
+                "gdpr_score": _component_score(score_data, "gdpr"),
+                "hipaa_score": _component_score(score_data, "hipaa"),
+                "pci_score": _component_score(score_data, "pci"),
+                "dpa_score": _component_score(score_data, "dpa"),
+                "privacy_policy_score": _component_score(score_data, "privacy_policy"),
+                "applicable_regulations": detail_data["applicable_regulations"],
+                "findings": detail_data["findings"],
+                "gaps": detail_data["gaps"],
+                "recommendations": detail_data["recommendations"],
                 "status": "completed",
-                "report": {"agent_output": final_msg[:5000]},
+                "report": report_payload,
                 "completed_at": completed_at,
             })
 
@@ -246,20 +463,41 @@ Where document text is missing, flag the gap clearly."""
             "phase": "compliance_review", "tool_name": "agent_end", "status": "complete"
         })
 
-        return {
+        trace_agent_decision(
+            vendor_id,
+            "compliance_review",
+            "Compliance score and gap inventory persisted from structured tool outputs.",
+            db_write_summary,
+            trace_id=trace_id,
+        )
+
+        result_payload = {
             "status": "success",
             "overall_score": score,
             "score": score,
             "grade": grade,
             "score_breakdown": score_data["breakdown"],
             "critical_flags": score_data.get("critical_flags", []),
+            "findings": detail_data["findings"],
+            "gaps": detail_data["gaps"],
+            "recommendations": detail_data["recommendations"],
+            "applicable_regulations": detail_data["applicable_regulations"],
             "risk_level": score_data["risk_level"],
             "agent_output": final_msg[:3000],
             "data_warnings": data_warnings,
+            "db_write_summary": db_write_summary,
         }
+        trace_agent_complete(vendor_id, "compliance_review", result_payload, trace_id=trace_id)
+        return result_payload
 
     except Exception as e:
         logger.error(f"Compliance agent failed for vendor {vendor_id}: {e}")
+        trace_agent_error(
+            vendor_id,
+            "compliance_review",
+            str(e),
+            error_type=type(e).__name__,
+        )
         if review_id:
             update_compliance_review(
                 review_id,

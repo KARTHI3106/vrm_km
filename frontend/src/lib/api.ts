@@ -210,3 +210,38 @@ export function uploadVendorDocuments(vendorId: string, files: File[]) {
     body: formData,
   });
 }
+
+export function getVendorTraces(vendorId: string) {
+  return fetchJson<{
+    vendor_id: string;
+    total_traces: number;
+    traces: Array<{
+      trace_id: string;
+      timestamp: string;
+      phase?: string;
+      agent_name: string;
+      step?: string;
+      event_type: string;
+      level: string;
+      status?: string;
+      message: string;
+      thinking: string | null;
+      provider?: string | null;
+      model?: string | null;
+      tool_name?: string | null;
+      input_summary?: Record<string, unknown> | string | null;
+      output_summary?: Record<string, unknown> | string | null;
+      tool_calls: Array<{
+        tool_name?: string;
+        tool?: string;
+        input?: Record<string, unknown>;
+        output_status?: string;
+        duration_ms?: number;
+      }>;
+      decisions: Array<{
+        decision: string;
+        data?: Record<string, unknown>;
+      }>;
+    }>;
+  }>(`/vendors/${vendorId}/traces`);
+}

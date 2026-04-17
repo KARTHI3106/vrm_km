@@ -1,10 +1,18 @@
 """
 Application configuration loaded from environment variables.
 """
-import os
-from pydantic_settings import BaseSettings
-from pydantic import Field
 from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ENV_FILES = (
+    str(BACKEND_ROOT / ".env"),
+    ".env",
+)
 
 
 class Settings(BaseSettings):
@@ -15,10 +23,13 @@ class Settings(BaseSettings):
     supabase_key: str = Field(default="")
     supabase_db_url: str = Field(default="")
 
-    # LLM
+    # LLM - OpenAI (primary) + Groq (fallback)
+    openai_api_key: str = Field(default="")
+    openai_model: str = Field(default="gpt-4o")
     ollama_base_url: str = Field(default="http://localhost:11434")
     ollama_model: str = Field(default="llama3.1:8b")
     groq_api_key: str = Field(default="")
+    groq_model: str = Field(default="llama-3.3-70b-versatile")
 
     # Redis
     redis_url: str = Field(default="redis://localhost:6379/0")
@@ -29,7 +40,7 @@ class Settings(BaseSettings):
     # App
     app_env: str = Field(default="development")
     log_level: str = Field(default="DEBUG")
-    upload_dir: str = Field(default="./uploads")
+    upload_dir: str = Field(default=str(BACKEND_ROOT / "uploads"))
 
     # Monitoring
     prometheus_enabled: bool = Field(default=True)
@@ -63,8 +74,7 @@ class Settings(BaseSettings):
     agent_timeout_seconds: int = Field(default=120)
 
     model_config = {
-
-        "env_file": ".env",
+        "env_file": DEFAULT_ENV_FILES,
         "env_file_encoding": "utf-8",
         "case_sensitive": False,
     }

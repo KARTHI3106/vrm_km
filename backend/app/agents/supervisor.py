@@ -56,7 +56,7 @@ def _best_effort_summary(vendor_id: str, packet: dict) -> str:
     return ""
 
 
-def run_supervisor(vendor_id: str) -> dict:
+def run_supervisor(vendor_id: str, has_error: bool = False) -> dict:
     """Compile the final approval packet for a vendor review."""
     vendor = get_vendor(vendor_id)
     if not vendor:
@@ -65,7 +65,7 @@ def run_supervisor(vendor_id: str) -> dict:
     save_state(
         vendor_id,
         {
-            "current_phase": "supervisor_final",
+            "current_phase": "error" if has_error else "supervisor_final",
             "current_agent": "supervisor",
             "progress_percentage": 98,
         },
@@ -80,7 +80,7 @@ def run_supervisor(vendor_id: str) -> dict:
 
         approval = get_approval_request(vendor_id) or {}
         response = {
-            "status": "success",
+            "status": "error" if has_error else "success",
             "vendor_id": vendor_id,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "approval_status": approval.get("status"),
@@ -94,7 +94,7 @@ def run_supervisor(vendor_id: str) -> dict:
         save_state(
             vendor_id,
             {
-                "current_phase": "done",
+                "current_phase": "error" if has_error else "done",
                 "current_agent": "supervisor",
                 "progress_percentage": 100,
             },
@@ -105,6 +105,7 @@ def run_supervisor(vendor_id: str) -> dict:
             agent_name="supervisor",
             action="final_packet_completed",
             output_data={
+                "status": "error" if has_error else "success",
                 "approval_status": approval.get("status"),
                 "vendor_status": packet.get("vendor", {}).get("status"),
             },

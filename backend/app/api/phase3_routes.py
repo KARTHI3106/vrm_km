@@ -22,7 +22,9 @@ from app.core.auth import (
     create_refresh_token,
     decode_token,
 )
+from app.core.business_workflow import derive_business_risk_tier, derive_business_workflow_snapshot
 from app.core.db import (
+    get_documents_for_vendor,
     get_vendor,
     get_risk_assessment,
     get_approval_workflow,
@@ -97,6 +99,15 @@ class WorkflowCreateRequest(BaseModel):
     approvers: list[dict] = Field(default_factory=list)
     approval_order: str = "sequential"
     timeout_hours: int = 72
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -207,21 +218,24 @@ async def get_vendor_risk_assessment(vendor_id: str):
         "vendor_id": vendor_id,
         "vendor_name": vendor.get("name"),
         "risk_assessment": {
-            "overall_risk_score": float(risk.get("overall_risk_score", 0)),
+            "overall_risk_score": _safe_float(risk.get("overall_risk_score", 0)),
             "risk_level": risk.get("risk_level"),
             "approval_tier": risk.get("approval_tier"),
+            "risk_tier_label": derive_business_risk_tier(
+                overall_score=_safe_float(risk.get("overall_risk_score", 0))
+            ).get("label"),
             "breakdown": {
                 "security": {
-                    "score": float(risk.get("security_score", 0)),
-                    "weight": float(risk.get("security_weight", 0.40)),
+                    "score": _safe_float(risk.get("security_score", 0)),
+                    "weight": _safe_float(risk.get("security_weight", 0.40), 0.40),
                 },
                 "compliance": {
-                    "score": float(risk.get("compliance_score", 0)),
-                    "weight": float(risk.get("compliance_weight", 0.35)),
+                    "score": _safe_float(risk.get("compliance_score", 0)),
+                    "weight": _safe_float(risk.get("compliance_weight", 0.35), 0.35),
                 },
                 "financial": {
-                    "score": float(risk.get("financial_score", 0)),
-                    "weight": float(risk.get("financial_weight", 0.25)),
+                    "score": _safe_float(risk.get("financial_score", 0)),
+                    "weight": _safe_float(risk.get("financial_weight", 0.25), 0.25),
                 },
             },
             "executive_summary": risk.get("executive_summary"),
@@ -300,9 +314,12 @@ async def get_vendor_approval_workflow(vendor_id: str):
 async def submit_approval_decision(
     vendor_id: str,
     req: ApprovalDecisionRequest,
-    user: dict = Depends(require_role("admin", "approver")),
+    user: dict = Depends(get_current_user),
 ):
     """Submit an approval decision for a vendor. Requires authentication."""
+    if user.get("role") not in {"admin", "approver"}:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     vendor = get_vendor(vendor_id)
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
@@ -317,12 +334,22 @@ async def submit_approval_decision(
             detail="Decision must be: approve, reject, or request_changes",
         )
 
+    approver_role = str(
+        user.get("department")
+        or user.get("role")
+        or "approver"
+    ).strip().lower().replace(" ", "_")
+    if approver_role == "admin":
+        required_approvers = approval.get("required_approvers", []) or []
+        if required_approvers:
+            approver_role = str(required_approvers[0].get("role", "admin"))
+
     decision = record_approval_decision_data(
         vendor_id=vendor_id,
         approval_id=approval["id"],
         approver_id=user.get("id"),
         approver_name=user.get("full_name", "Unknown"),
-        approver_role=user.get("role", "approver"),
+        approver_role=approver_role,
         decision=req.decision,
         comments=req.comments,
         conditions=req.conditions,
@@ -551,25 +578,63 @@ async def list_vendors(
 
     enriched = []
     for vendor in vendors:
-        risk = get_risk_assessment(vendor.get("id"))
-        approval = get_approval_request(vendor.get("id"))
+        vendor_id = vendor.get("id")
+        try:
+            documents = get_documents_for_vendor(vendor_id)
+        except Exception:
+            documents = []
+        try:
+            security_review = get_security_review(vendor_id)
+        except Exception:
+            security_review = None
+        try:
+            compliance_review = get_compliance_review(vendor_id)
+        except Exception:
+            compliance_review = None
+        try:
+            financial_review = get_financial_review(vendor_id)
+        except Exception:
+            financial_review = None
+        try:
+            risk = get_risk_assessment(vendor_id)
+        except Exception:
+            risk = None
+        try:
+            approval = get_approval_request(vendor_id)
+        except Exception:
+            approval = None
+        workflow = derive_business_workflow_snapshot(
+            vendor=vendor,
+            documents=documents,
+            security_review=security_review,
+            compliance_review=compliance_review,
+            financial_review=financial_review,
+            risk_assessment=risk,
+            approval=approval,
+            active_state=None,
+        )
         enriched.append(
             {
                 "id": vendor.get("id"),
                 "name": vendor.get("name"),
                 "vendor_type": vendor.get("vendor_type"),
                 "status": vendor.get("status"),
-                "contract_value": float(vendor.get("contract_value", 0)),
+                "contract_value": _safe_float(vendor.get("contract_value", 0)),
                 "domain": vendor.get("domain"),
                 "contact_email": vendor.get("contact_email"),
                 "created_at": vendor.get("created_at"),
                 "updated_at": vendor.get("updated_at"),
-                "overall_risk_score": float(risk.get("overall_risk_score", 0))
+                "overall_risk_score": _safe_float(risk.get("overall_risk_score"), 0.0)
                 if risk
                 else None,
                 "risk_level": risk.get("risk_level") if risk else None,
                 "approval_tier": risk.get("approval_tier") if risk else None,
                 "approval_status": approval.get("status") if approval else None,
+                "workflow_stage": workflow["workflow_stage"],
+                "workflow_stage_label": workflow["workflow_stage_label"],
+                "workflow_progress_percentage": workflow["workflow_progress_percentage"],
+                "risk_tier": workflow["risk_tier"],
+                "risk_tier_label": workflow["risk_tier_label"],
             }
         )
 

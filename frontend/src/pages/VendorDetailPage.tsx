@@ -29,8 +29,29 @@ function asRecord(value: unknown) {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
-function asStringList(value: unknown) {
-  return Array.isArray(value) ? value.map((entry) => String(entry)) : [];
+function summarizeValue(value: unknown) {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return String(
+      record.title ||
+        record.requirement ||
+        record.condition ||
+        record.document_type ||
+        record.description ||
+        JSON.stringify(record),
+    );
+  }
+  return String(value);
+}
+
+function asDisplayList(value: unknown) {
+  return Array.isArray(value) ? value.map((entry) => summarizeValue(entry)) : [];
 }
 
 export function VendorDetailPage() {
@@ -139,12 +160,15 @@ export function VendorDetailPage() {
   const documents = documentsQuery.data?.documents || [];
   const evidenceRequests = evidenceQuery.data?.evidence_requests || [];
   const approvalStatus = approvalStatusQuery.data;
+  const workflowStages = Array.isArray(statusQuery.data?.workflow_stages)
+    ? statusQuery.data.workflow_stages
+    : [];
 
   const findings = useMemo(() => {
     return [
-      ...asStringList(securityReview.critical_issues),
-      ...asStringList(complianceReview.gaps),
-      ...asStringList(financialReview.findings),
+      ...asDisplayList(securityReview.critical_issues),
+      ...asDisplayList(complianceReview.gaps),
+      ...asDisplayList(financialReview.findings),
     ].filter((entry) =>
       deferredSearch ? normalizeText(entry).includes(deferredSearch) : true,
     );
@@ -198,6 +222,11 @@ export function VendorDetailPage() {
   );
   const riskLevel = String(riskAssessment.risk_level ?? status.risk_level ?? "Pending");
   const currentStage = resolveStageFromVendorStatus(status);
+  const currentWorkflowStageLabel =
+    status.workflow_stage_label || currentStage.replace(/_/g, " ").toUpperCase();
+  const workflowProgress = Number(
+    status.workflow_progress_percentage ?? status.progress_percentage ?? 0,
+  );
 
   return (
     <div className="page">
@@ -241,9 +270,9 @@ export function VendorDetailPage() {
               <StatusBadge tone={toneForRisk(riskLevel)}>{riskLevel}</StatusBadge>
             </div>
             <div className="risk-velocity__score">{Math.round(overallRiskScore)}</div>
-            <p className="panel-muted">Current stage: {currentStage.toUpperCase()}</p>
+            <p className="panel-muted">Current stage: {currentWorkflowStageLabel}</p>
             <div className="progress-bar">
-              <div className="progress-bar__fill" style={{ width: `${Math.max(overallRiskScore, 8)}%` }} />
+              <div className="progress-bar__fill" style={{ width: `${Math.max(workflowProgress, 8)}%` }} />
             </div>
           </div>
 
@@ -391,8 +420,8 @@ export function VendorDetailPage() {
             </div>
             <div className="stack">
               <div className="data-row">
-                <div className="data-row__title">Current Phase</div>
-                <div>{status.current_phase || status.status || "Queued"}</div>
+                <div className="data-row__title">Business Stage</div>
+                <div>{status.workflow_stage_label || status.current_phase || status.status || "Queued"}</div>
               </div>
               <div className="data-row">
                 <div className="data-row__title">Current Agent</div>
@@ -400,12 +429,36 @@ export function VendorDetailPage() {
               </div>
               <div className="data-row">
                 <div className="data-row__title">Progress</div>
-                <div>{formatPercent(status.progress_percentage)}</div>
+                <div>{formatPercent(workflowProgress)}</div>
+              </div>
+              <div className="data-row">
+                <div className="data-row__title">Risk Tier</div>
+                <div>{status.risk_tier_label || "Tier Pending"}</div>
               </div>
               <div className="data-row">
                 <div className="data-row__title">Approval</div>
                 <div>{approvalStatus?.status || status.approval_status || "No approval"}</div>
               </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card__header">
+              <div>
+                <p className="page__kicker">Exact Workflow</p>
+                <h2 className="section-title">Business Sequence</h2>
+              </div>
+            </div>
+            <div className="stack">
+              {workflowStages.map((stage) => (
+                <div className="data-row" key={stage.key}>
+                  <div className="data-row__title">{stage.label}</div>
+                  <div>
+                    <StatusBadge tone={toneForStatus(stage.status)}>{stage.status || "pending"}</StatusBadge>
+                    {Array.isArray(stage.notes) && stage.notes.length ? ` | ${stage.notes[0]}` : ""}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -449,7 +502,7 @@ export function VendorDetailPage() {
               {(evidenceStatusQuery.data?.recent_tracking || []).slice(0, 4).map((entry, index) => (
                 <div className="timeline-item" key={`${entry.action}-${index}`}>
                   <span className="timeline-item__title">{entry.action || "Tracking"}</span>
-                  <span>{entry.details || "Workflow tracking entry"}</span>
+                  <span>{summarizeValue(entry.details) || "Workflow tracking entry"}</span>
                   <span className="timeline-item__meta">{formatDateTime(entry.created_at)}</span>
                 </div>
               ))}

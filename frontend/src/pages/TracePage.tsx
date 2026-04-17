@@ -10,6 +10,7 @@ import {
   getVendorFinancial,
   getVendorSecurity,
   getVendorStatus,
+  getVendorTraces,
   listVendors,
 } from "../lib/api";
 import { useVendorEventStream } from "../lib/events";
@@ -36,6 +37,18 @@ function reviewStatus(
 
 function asRecord(value: unknown) {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function summarizeTrace(trace: Record<string, unknown>) {
+  const parts = [
+    String(trace.agent_name || "agent"),
+    String(trace.step || trace.event_type || "step"),
+    String(trace.status || "recorded"),
+  ];
+  const toolName = trace.tool_name ? `tool ${String(trace.tool_name)}` : "";
+  const provider = trace.provider ? `${String(trace.provider)}:${String(trace.model || "")}` : "";
+  const message = String(trace.message || "");
+  return [parts.join(" | "), toolName, provider, message].filter(Boolean).join(" | ");
 }
 
 export function TracePage() {
@@ -74,6 +87,12 @@ export function TracePage() {
     queryKey: ["vendor", vendorId, "trace-financial"],
     queryFn: () => getVendorFinancial(vendorId || ""),
     enabled: Boolean(vendorId),
+  });
+  const tracesQuery = useQuery({
+    queryKey: ["vendor", vendorId, "traces"],
+    queryFn: () => getVendorTraces(vendorId || ""),
+    enabled: Boolean(vendorId),
+    refetchInterval: 5000,
   });
 
   const queue = useMemo(() => {
@@ -144,6 +163,9 @@ export function TracePage() {
     ...(Array.isArray(auditQuery.data?.audit_trail) ? auditQuery.data?.audit_trail : []),
     ...(Array.isArray(auditQuery.data?.trail) ? auditQuery.data?.trail : []),
   ] as Array<Record<string, unknown>>;
+  const traceEntries = Array.isArray(tracesQuery.data?.traces)
+    ? (tracesQuery.data?.traces as Array<Record<string, unknown>>)
+    : [];
 
   const securityState = reviewStatus(status.current_agent, "security_review", securityReview);
   const complianceState = reviewStatus(status.current_agent, "compliance_review", complianceReview);
@@ -205,12 +227,16 @@ export function TracePage() {
             </div>
             <div className="stack">
               <div className="data-row">
-                <div className="data-row__title">Current Phase</div>
-                <div>{status.current_phase || status.status || "Queued"}</div>
+                <div className="data-row__title">Business Stage</div>
+                <div>{status.workflow_stage_label || status.current_phase || status.status || "Queued"}</div>
               </div>
               <div className="data-row">
                 <div className="data-row__title">Progress</div>
-                <div>{status.progress_percentage || 0}%</div>
+                <div>{status.workflow_progress_percentage ?? status.progress_percentage ?? 0}%</div>
+              </div>
+              <div className="data-row">
+                <div className="data-row__title">Risk Tier</div>
+                <div>{status.risk_tier_label || "Tier Pending"}</div>
               </div>
               <div className="data-row">
                 <div className="data-row__title">Risk Level</div>
@@ -243,6 +269,14 @@ export function TracePage() {
                 <span className="trace-line__event">{JSON.stringify(event.data)}</span>
               </div>
             ))}
+            {traceEntries.map((trace, index) => (
+              <div className="trace-line" key={`${String(trace.trace_id || index)}-${index}`}>
+                <span className="trace-line__time">
+                  {formatDateTime(String(trace.timestamp || ""))}
+                </span>
+                <span className="trace-line__event">{summarizeTrace(trace)}</span>
+              </div>
+            ))}
             {auditEntries.map((entry, index) => (
               <div className="trace-line" key={`${String(entry.action || entry.agent_name || index)}-${index}`}>
                 <span className="trace-line__time">
@@ -255,7 +289,7 @@ export function TracePage() {
                 </span>
               </div>
             ))}
-            {!stream.events.length && !auditEntries.length ? (
+            {!stream.events.length && !traceEntries.length && !auditEntries.length ? (
               <div className="trace-line">
                 <span className="trace-line__time">idle</span>
                 <span className="trace-line__event">

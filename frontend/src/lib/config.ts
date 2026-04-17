@@ -1,5 +1,5 @@
 function normalizeApiBaseUrl(rawValue: string | undefined) {
-  const trimmed = (rawValue?.trim() || "http://127.0.0.1:8000").replace(
+  const trimmed = (rawValue?.trim() || "http://localhost:8000").replace(
     /\/$/,
     "",
   );
