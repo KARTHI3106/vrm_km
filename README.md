@@ -37,14 +37,14 @@
 
 **Vendorsols** automates the complete lifecycle of vendor risk assessment:
 
-1. **Intake** — Upload vendor documents (PDF, DOCX, XLSX); agents parse, classify, and extract metadata
-2. **Parallel Review** — Three domain agents (Security, Compliance, Financial) run concurrently with deterministic scoring
-3. **Evidence Coordination** — Post-review gap analysis with consolidated evidence request emails
-4. **Risk Assessment** — Weighted aggregation of domain scores, blocker identification, executive summary generation
-5. **Approval Orchestration** — Tier-based approval routing with RBAC, auto-simulation for dev, and email notifications
-6. **Final Compilation** — Supervisor assembles the complete approval packet and closes the workflow
+1. **Intake** - Upload vendor documents (PDF, DOCX, XLSX); agents parse, classify, and extract metadata
+2. **Parallel Review** - Three domain agents (Security, Compliance, Financial) run concurrently with deterministic scoring
+3. **Evidence Coordination** - Post-review gap analysis with consolidated evidence request emails
+4. **Risk Assessment** - Weighted aggregation of domain scores, blocker identification, executive summary generation
+5. **Approval Orchestration** - Tier-based approval routing with RBAC, auto-simulation for dev, and email notifications
+6. **Final Compilation** - Supervisor assembles the complete approval packet and closes the workflow
 
-**Version**: 3.0.0 (Phase 3 — Production Ready)
+**Version**: 3.0.0 (Phase 3 - Production Ready)
 
 ---
 
@@ -114,11 +114,11 @@
 | Database | Supabase (PostgreSQL) | ≥2.11 |
 | Cache / PubSub | Redis | ≥5.2 |
 | Auth | python-jose + passlib + bcrypt | JWT/RBAC |
-| Document Processing | pdfplumber, python-docx, openpyxl | — |
+| Document Processing | pdfplumber, python-docx, openpyxl | - |
 | OCR | EasyOCR | ≥1.7 |
-| Monitoring | Prometheus + Grafana | — |
+| Monitoring | Prometheus + Grafana | - |
 | Logging | structlog | ≥24.4 |
-| Runtime | Python 3.12, Uvicorn | — |
+| Runtime | Python 3.12, Uvicorn | - |
 
 ### Frontend
 
@@ -129,7 +129,7 @@
 | Routing | React Router DOM | 7.6 |
 | Data Fetching | TanStack React Query | 5.80 |
 | Language | TypeScript | 5.8 |
-| Testing | Vitest + Testing Library + MSW | — |
+| Testing | Vitest + Testing Library + MSW | - |
 
 ---
 
@@ -279,13 +279,13 @@ START → intake_node
 
 | Agent | Tools | LLM Role | Deterministic Role |
 |-------|-------|----------|-------------------|
-| Document Intake | 7 (parse_pdf, parse_docx, parse_excel, ocr_scan, classify_document, extract_vendor_metadata, extract_dates, store_document_metadata) | Data extraction, classification | — |
+| Document Intake | 7 (parse_pdf, parse_docx, parse_excel, ocr_scan, classify_document, extract_vendor_metadata, extract_dates, store_document_metadata) | Data extraction, classification | - |
 | Security Review | 10 (search_security_policies, validate_soc2_certificate, validate_iso27001_certificate, check_certificate_expiry, scan_domain_security, check_breach_history, analyze_security_questionnaire, generate_security_report, flag_critical_issues, calculate_security_score) | Data gathering, narrative | Score computation from tool outputs |
 | Compliance Review | 10 (search_compliance_policies, check_gdpr_compliance, check_hipaa_compliance, check_pci_compliance, verify_data_processing_agreement, assess_data_retention_policy, check_subprocessor_list, validate_privacy_policy, calculate_compliance_score, generate_compliance_report) | Data gathering, narrative | Score computation from tool outputs |
 | Financial Review | 9 (search_financial_policies, verify_insurance_coverage, check_insurance_expiry, get_credit_rating, analyze_financial_statements, check_bankruptcy_records, verify_business_continuity_plan, calculate_financial_risk_score, generate_financial_report) | Data gathering, narrative | Score computation from tool outputs |
-| Evidence Coordinator | 8 (get_required_documents, compare_required_vs_submitted, generate_evidence_request_email, send_email, create_followup_task, track_document_status, send_reminder_email, update_evidence_log) | Gap analysis, email composition | — |
+| Evidence Coordinator | 8 (get_required_documents, compare_required_vs_submitted, generate_evidence_request_email, send_email, create_followup_task, track_document_status, send_reminder_email, update_evidence_log) | Gap analysis, email composition | - |
 | Risk Assessment | 7 (aggregate_findings, calculate_overall_risk_score, identify_critical_blockers, identify_conditional_approvals, generate_executive_summary, recommend_approval_tier, create_risk_matrix, generate_mitigation_recommendations) | Executive summary, mitigation recommendations | Weighted scoring, blocker identification, tier recommendation |
-| Approval Orchestrator | 9 (get_approval_workflow, create_approval_request, send_approval_notification, track_approval_status, record_approval_decision, check_all_approvals_complete, finalize_vendor_status, generate_audit_trail, send_vendor_notification) | — (fully deterministic) | Workflow setup, decision recording, vendor notification |
+| Approval Orchestrator | 9 (get_approval_workflow, create_approval_request, send_approval_notification, track_approval_status, record_approval_decision, check_all_approvals_complete, finalize_vendor_status, generate_audit_trail, send_vendor_notification) | - (fully deterministic) | Workflow setup, decision recording, vendor notification |
 | Supervisor | 1 (compile_approval_packet) | Final summary narrative | Packet compilation |
 
 ### GraphState
@@ -349,7 +349,7 @@ Parallel agents write to Redis:
   }
 
 Downstream agents (evidence, risk) read this context.
-Note: Best-effort — truly parallel agents may not see each other's results immediately.
+Note: Best-effort - truly parallel agents may not see each other's results immediately.
 ```
 
 ### 4. Real-Time Updates
@@ -371,7 +371,7 @@ Risk assessment → approval_tier (auto_approve/manager/vp/executive/board)
 
 ## Scoring Methodology
 
-All scoring is **deterministic** — the LLM never generates numeric scores.
+All scoring is **deterministic** - the LLM never generates numeric scores.
 
 ### Security (40% default weight)
 | Component | Weight | Scoring Rules |
@@ -405,7 +405,7 @@ All scoring is **deterministic** — the LLM never generates numeric scores.
 | 80-89 | B | Low |
 | 70-79 | C | Medium |
 | 60-69 | D | Medium |
-| 40-59 | — | High |
+| 40-59 | - | High |
 | 0-39 | F | Critical |
 
 ### Approval Tier Escalation
@@ -414,8 +414,8 @@ All scoring is **deterministic** — the LLM never generates numeric scores.
 | ≥90 | Auto-approve | Blockers → manager; regulations → manager |
 | ≥80 | Manager | Sensitive vendor → VP; contract ≥$500K → VP |
 | ≥60 | VP | Contract ≥$1M → board/executive |
-| ≥40 | Executive | — |
-| <40 | Board | — |
+| ≥40 | Executive | - |
+| <40 | Board | - |
 
 ---
 
@@ -470,10 +470,10 @@ Supabase (PostgreSQL) with RLS enabled on all tables.
 #### Vendor Status & Reports
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| GET | `/vendors` | — | List vendors (filter by status) |
-| GET | `/vendors/{id}/status` | — | Live workflow status + progress |
-| GET | `/vendors/{id}/report` | — | Complete assessment report |
-| GET | `/vendors/{id}/approval-packet` | — | Full approval packet |
+| GET | `/vendors` | - | List vendors (filter by status) |
+| GET | `/vendors/{id}/status` | - | Live workflow status + progress |
+| GET | `/vendors/{id}/report` | - | Complete assessment report |
+| GET | `/vendors/{id}/approval-packet` | - | Full approval packet |
 
 #### Domain Reviews
 | Method | Endpoint | Description |
@@ -494,13 +494,13 @@ Supabase (PostgreSQL) with RLS enabled on all tables.
 #### Risk & Approval
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| GET | `/vendors/{id}/risk-assessment` | — | Risk score, level, breakdown |
-| GET | `/vendors/{id}/risk-matrix` | — | Visualization-ready risk matrix |
-| GET | `/vendors/{id}/approval-workflow` | — | Approval workflow details |
+| GET | `/vendors/{id}/risk-assessment` | - | Risk score, level, breakdown |
+| GET | `/vendors/{id}/risk-matrix` | - | Visualization-ready risk matrix |
+| GET | `/vendors/{id}/approval-workflow` | - | Approval workflow details |
 | POST | `/vendors/{id}/approvals` | approver/admin | Submit approval decision |
-| GET | `/vendors/{id}/approvals` | — | List approval decisions |
-| GET | `/vendors/{id}/approval-status` | — | Approval completion status |
-| GET | `/vendors/{id}/audit-trail` | — | Complete audit timeline |
+| GET | `/vendors/{id}/approvals` | - | List approval decisions |
+| GET | `/vendors/{id}/approval-status` | - | Approval completion status |
+| GET | `/vendors/{id}/audit-trail` | - | Complete audit timeline |
 
 #### Real-Time
 | Method | Endpoint | Description |
@@ -518,16 +518,16 @@ Supabase (PostgreSQL) with RLS enabled on all tables.
 #### Dashboard & Admin
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| GET | `/dashboard/stats` | — | Aggregate statistics |
-| GET | `/dashboard/recent` | — | Recent vendors/approvals |
-| GET | `/approval-workflows` | — | List workflows |
+| GET | `/dashboard/stats` | - | Aggregate statistics |
+| GET | `/dashboard/recent` | - | Recent vendors/approvals |
+| GET | `/approval-workflows` | - | List workflows |
 | POST | `/approval-workflows` | admin | Create workflow |
 | PUT | `/approval-workflows/{id}` | admin | Update workflow |
-| GET | `/policies` | — | List policies |
+| GET | `/policies` | - | List policies |
 | POST | `/policies` | admin | Create policy + vectorize |
 | DELETE | `/policies/{id}` | admin | Deactivate policy |
 | GET | `/users` | admin | List users |
-| GET | `/health` | — | System health check |
+| GET | `/health` | - | System health check |
 
 ---
 
@@ -554,16 +554,16 @@ SSE events (useVendorEventStream) ← Redis PubSub ← Agent publish_event()
 ```
 
 ### Key Hooks & Utilities
-- `useVendorEventStream(vendorId)` — SSE connection with polling fallback
-- `useShell()` — Global search, panel state, approval token
-- `resolveStageFromStatus()` / `resolveStageFromVendorStatus()` — Map vendor status to pipeline stage
-- `toneForRisk()` / `toneForStatus()` — Color tone derivation for badges
+- `useVendorEventStream(vendorId)` - SSE connection with polling fallback
+- `useShell()` - Global search, panel state, approval token
+- `resolveStageFromStatus()` / `resolveStageFromVendorStatus()` - Map vendor status to pipeline stage
+- `toneForRisk()` / `toneForStatus()` - Color tone derivation for badges
 
 ### Environment Variables
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VITE_API_BASE_URL` | `http://127.0.0.1:8000` | Backend API base URL |
-| `VITE_APPROVER_BEARER_TOKEN` | — | Pre-configured approval JWT |
+| `VITE_APPROVER_BEARER_TOKEN` | - | Pre-configured approval JWT |
 
 ---
 
@@ -778,46 +778,46 @@ Returns status of all services:
 ## Known Issues & Technical Debt
 
 ### Critical
-1. **CORS allows all origins** (`allow_origins=["*"]`) — must be restricted in production
-2. **RLS policies are permissive** (`USING (true) WITH CHECK (true)`) — all tables grant full service_role access; no tenant isolation
-3. **JWT secret defaults to empty** — auth is completely bypassed when `JWT_SECRET` is not set (dev mode returns a default admin user)
+1. **CORS allows all origins** (`allow_origins=["*"]`) - must be restricted in production
+2. **RLS policies are permissive** (`USING (true) WITH CHECK (true)`) - all tables grant full service_role access; no tenant isolation
+3. **JWT secret defaults to empty** - auth is completely bypassed when `JWT_SECRET` is not set (dev mode returns a default admin user)
 4. **Supabase key in .env.example** contains a publishable key that should be rotated
 
 ### Architecture
-5. **Parallel agent cross-visibility is best-effort** — agents running truly in parallel may not see each other's Redis context updates immediately
-6. **No async DB operations** — all Supabase calls are synchronous; this blocks the event loop under load
-7. **Global LLM singletons** — `_llm_instance` and `_tool_llm_instance` are module-level globals with no thread safety
-8. **Redis fallback to in-memory dict** — `_mock_store` and `_mock_cache` are not shared across workers; multi-process deployments will have inconsistent state
-9. **No database connection pooling** — Supabase client is a singleton with no pool management
+5. **Parallel agent cross-visibility is best-effort** - agents running truly in parallel may not see each other's Redis context updates immediately
+6. **No async DB operations** - all Supabase calls are synchronous; this blocks the event loop under load
+7. **Global LLM singletons** - `_llm_instance` and `_tool_llm_instance` are module-level globals with no thread safety
+8. **Redis fallback to in-memory dict** - `_mock_store` and `_mock_cache` are not shared across workers; multi-process deployments will have inconsistent state
+9. **No database connection pooling** - Supabase client is a singleton with no pool management
 
 ### Code Quality
-10. **Mixed `__pycache__` from Python 3.12 and 3.13** — suggests development environment inconsistency
-11. **No type checking enforcement** — `mypy` or `pyright` not configured; Pydantic models in `state.py` are defined but not used by the actual `GraphState` TypedDict
-12. **Tool output parsing is fragile** — `_extract_tool_outputs()` relies on `ToolMessage.name` matching hardcoded `_TOOL_OUTPUT_MAP` keys
+10. **Mixed `__pycache__` from Python 3.12 and 3.13** - suggests development environment inconsistency
+11. **No type checking enforcement** - `mypy` or `pyright` not configured; Pydantic models in `state.py` are defined but not used by the actual `GraphState` TypedDict
+12. **Tool output parsing is fragile** - `_extract_tool_outputs()` relies on `ToolMessage.name` matching hardcoded `_TOOL_OUTPUT_MAP` keys
 13. **`update.py` and `fix_template.py` are undocumented utility scripts** at the backend root
 
 ### Missing Features
-14. **No pagination on audit_logs** — `get_audit_logs()` returns all entries with no limit
-15. **No WebSocket support** — SSE is one-directional; frontend cannot push commands
-16. **No file size/type validation** — uploaded files have no restrictions
-17. **No vendor deletion API** — only status transitions are exposed
-18. **No email template system** — email bodies are string-concatenated in Python
-19. **No rate limit persistence** — rate limiting uses Redis ZADD but falls back to no-op when Redis is unavailable
-20. **Frontend pages directory is empty at `src/pages/`** but pages exist at the same level — likely a stale directory
+14. **No pagination on audit_logs** - `get_audit_logs()` returns all entries with no limit
+15. **No WebSocket support** - SSE is one-directional; frontend cannot push commands
+16. **No file size/type validation** - uploaded files have no restrictions
+17. **No vendor deletion API** - only status transitions are exposed
+18. **No email template system** - email bodies are string-concatenated in Python
+19. **No rate limit persistence** - rate limiting uses Redis ZADD but falls back to no-op when Redis is unavailable
+20. **Frontend pages directory is empty at `src/pages/`** but pages exist at the same level - likely a stale directory
 
 ---
 
 ## Contribution Guidelines
 
 ### Branch Naming
-- `feature/<short-description>` — new features
-- `fix/<short-description>` — bug fixes
-- `refactor/<short-description>` — code restructuring
+- `feature/<short-description>` - new features
+- `fix/<short-description>` - bug fixes
+- `refactor/<short-description>` - code restructuring
 
 ### Code Style
 - **Backend**: Follow PEP 8; use `structlog` for all logging; type hints on all function signatures
 - **Frontend**: TypeScript strict mode; functional components with hooks; TanStack Query for all data fetching
-- **No comments in code** unless explicitly requested — code should be self-documenting
+- **No comments in code** unless explicitly requested - code should be self-documenting
 
 ### Agent Development Pattern
 When adding a new agent:
