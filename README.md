@@ -3,7 +3,7 @@
 > Multi-agent autonomous vendor risk assessment platform. Eight specialized AI agents collaborate via a LangGraph state machine to intake, review, score, and approve vendors through a deterministic, auditable workflow.
 
 ---
-
+ 
 ## Table of Contents
 
 - [Project Overview](#project-overview)
