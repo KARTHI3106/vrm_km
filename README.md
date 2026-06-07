@@ -4,7 +4,7 @@
 
 --- 
   
-## Table of Contents
+## Table of Contents 
 
 - [Project Overview](#project-overview)
 - [Architecture](#architecture)
